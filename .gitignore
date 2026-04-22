@@ -1,0 +1,34 @@
+# Credenciais
+.env
+
+# Ambiente virtual
+env/
+venv/
+.venv/
+
+# Dados de execução
+data/
+temp/
+completed/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Playwright
+playwright-report/
+test-results/
+
+# Debug captcha
+debug_captchas/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
