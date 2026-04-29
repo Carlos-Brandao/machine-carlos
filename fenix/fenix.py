@@ -1,3 +1,4 @@
+import os
 import signal
 import sys
 import threading
@@ -9,6 +10,7 @@ import pandas as pd
 from playwright.sync_api import Page, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from services.captcha import _solve_2captcha
 from services.utils import aguardar_enter
 
 
@@ -16,6 +18,57 @@ def _salvar(dados: list[dict], path: Path) -> None:
     tmp = path.with_suffix(".tmp")
     pd.DataFrame(dados).to_excel(tmp, index=False)
     tmp.replace(path)
+
+
+def _login(page: Page, login_url: str, usuario: str, senha: str) -> bool:
+    for tentativa in range(1, 5):
+        page.goto(login_url)
+        page.wait_for_load_state("domcontentloaded")
+        page.fill("#txtLogin", usuario)
+
+        # Tab dispara onchange → postback AJAX → captcha aparece
+        page.press("#txtLogin", "Tab")
+        page.wait_for_load_state("networkidle", timeout=10_000)
+        page.wait_for_selector("#imgCaptcha", state="visible", timeout=5_000)
+
+        # preenche senha depois do postback terminar, antes de resolver o captcha
+        page.fill("#txtSenha", senha)
+
+        if tentativa <= 3:
+            src = page.locator("#imgCaptcha").get_attribute("src")
+            captcha_url = login_url.rsplit("/", 1)[0] + "/" + src.lstrip("/")
+            img_bytes = page.request.get(captcha_url).body()
+            os.makedirs("debug_captchas", exist_ok=True)
+            idx = len(os.listdir("debug_captchas"))
+            with open(f"debug_captchas/captcha_fenix_{idx}.png", "wb") as f:
+                f.write(img_bytes)
+            try:
+                captcha = _solve_2captcha(img_bytes, regsense=1)
+            except Exception as e:
+                print(f"  [login] captcha erro: {e}, tentando novamente...")
+                continue
+            print(f"  [login] tentativa {tentativa}: '{captcha}'")
+        else:
+            captcha = input("  captcha manual: ").strip()
+
+        page.fill("#txtCaptcha", captcha)
+        page.click("#Entrar")
+        page.wait_for_load_state("domcontentloaded")
+
+        # login falhou se o campo de login ainda estiver visível
+        if page.locator("#txtLogin").count() > 0 and page.locator("#gvOrgao").count() == 0:
+            print(f"  [login] falhou (tentativa {tentativa})")
+            continue
+
+        # tela de seleção de convênio (URL permanece Login.aspx por Server.Transfer)
+        if page.locator("#gvOrgao").count() > 0:
+            with page.expect_navigation(wait_until="networkidle"):
+                page.locator("#gvOrgao input[type='image']").first.click()
+
+        print("  [login] OK")
+        return True
+
+    return False
 
 
 def _processar(page: Page, cpf: str, matricula: str) -> dict:
@@ -36,6 +89,8 @@ def _processar(page: Page, cpf: str, matricula: str) -> dict:
     erro = page.query_selector("#body_mensgemLabel")
     if not (erro and "Dados não encontrados" in erro.inner_text()):
         info["nome_servidor"] = page.input_value("#body_clienteTextBox")
+        info["data_nascimento"] = page.input_value("#body_dataNascimentoTextBox")
+        info["tipo_servidor"] = page.input_value("#body_categoriaTextBox")
         info["margem_disponivel"] = page.input_value("#body_margemTextBox")
         info["status"] = "OK"
         print(f"  {info['nome_servidor']} | {info['margem_disponivel']}")
@@ -46,6 +101,8 @@ def _processar(page: Page, cpf: str, matricula: str) -> dict:
 def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> None:
     login_url = config["url_login"]
     consulta_url = config["url_consulta"]
+    usuario = config["usuario"]
+    senha = config["senha"]
 
     input_file = Path(input_file)
     temp_file = Path(temp_file)
@@ -88,12 +145,12 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
 
     with sync_playwright() as p:
         page = p.chromium.launch(headless=False).new_context().new_page()
-        page.goto(login_url)
+        if not _login(page, login_url, usuario, senha):
+            print("Login falhou após várias tentativas.")
+            return
 
-        print("\nFaça o login, selecione o convênio e entre na tela de Consulta de Margem.")
-        print("O robô inicia assim que detectar o campo de matrícula.\n")
-
-        page.wait_for_selector("#body_matriculaTextBox", timeout=0)
+        page.goto(consulta_url)
+        page.wait_for_selector("#body_matriculaTextBox", timeout=15_000)
         print("Tela detectada. Iniciando...\n")
 
         try:
