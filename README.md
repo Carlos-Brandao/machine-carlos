@@ -178,12 +178,16 @@ python main.py rf1 outroconsig
 ```env
 RF1_{CONVENIO}_URL_LOGIN=
 RF1_{CONVENIO}_URL_CONSULTA=
+RF1_{CONVENIO}_USUARIO=
+RF1_{CONVENIO}_SENHA=
 ```
 
 **`fenix`**
 ```env
 FENIX_{CONVENIO}_URL_LOGIN=
 FENIX_{CONVENIO}_URL_CONSULTA=
+FENIX_{CONVENIO}_USUARIO=
+FENIX_{CONVENIO}_SENHA=
 ```
 
 **`facil`**
@@ -208,13 +212,13 @@ GRID_{CONVENIO}_SENHA=
 
 ## Serviço de Captcha (2captcha)
 
-O bot `facil` utiliza o serviço [2captcha](https://2captcha.com) para resolução automática de captchas. Configure a chave no `.env`:
+Os bots `rf1`, `fenix` e `facil` utilizam o serviço [2captcha](https://2captcha.com) para resolução automática de captchas no login e nas consultas. Configure a chave no `.env`:
 
 ```env
 TWOCAPTCHA_API_KEY=sua_chave_aqui
 ```
 
-A chave é compartilhada entre todos os bots que utilizam o serviço.
+A chave é compartilhada entre todos os bots. O login é totalmente automatizado — nenhuma interação manual é necessária.
 
 ---
 
@@ -248,7 +252,7 @@ O registro com erro é salvo na planilha com o campo `erro` preenchido, e o bot 
 
 ## Observações
 
-- Os bots `rf1` e `fenix` exigem **login manual** no navegador (abre uma janela aguardando ENTER após o login)
-- O bot `grid` usa **Microsoft Edge** por padrão
+- O bot `grid` usa **Microsoft Edge** por padrão e ainda exige **login manual**
+- Os bots `rf1`, `fenix` e `facil` fazem login **totalmente automatizado** via 2captcha
 - O arquivo `.env` contém credenciais — **não versione este arquivo**
 - Em caso de interrupção, o bot retoma de onde parou usando o arquivo em `temp/`
