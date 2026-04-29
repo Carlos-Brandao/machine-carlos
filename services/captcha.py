@@ -10,13 +10,14 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 TWOCAPTCHA_API_KEY = os.getenv("TWOCAPTCHA_API_KEY")
 
 
-def _solve_2captcha(img_bytes: bytes) -> str:
+def _solve_2captcha(img_bytes: bytes, regsense: int = 0) -> str:
     img_b64 = base64.b64encode(img_bytes).decode()
     resp = requests.post("http://2captcha.com/in.php", data={
         "key": TWOCAPTCHA_API_KEY,
         "method": "base64",
         "body": img_b64,
         "json": 1,
+        "regsense": regsense,
     })
     data = resp.json()
     if data.get("status") != 1:
