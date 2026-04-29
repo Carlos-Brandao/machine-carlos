@@ -39,20 +39,41 @@ def _processados(temp_csv: Path) -> set[tuple[str, str]]:
         return set()
 
 
+async def _fechar_modais(page: Page) -> None:
+    for sel in ("button.btn-close", "button[data-coreui-dismiss='modal']", "button[data-dismiss='modal']"):
+        for btn in await page.locator(sel).all():
+            try:
+                if await btn.is_visible():
+                    await btn.click()
+                    await page.wait_for_timeout(300)
+            except Exception:
+                pass
+
+
 async def _login(page: Page, base_url: str, usuario: str, senha: str) -> bool:
-    await page.goto(base_url + "/")
-    await page.wait_for_load_state("domcontentloaded")
-    await page.fill("#usuario", usuario)
-    await page.fill("#senha", senha)
+    for tentativa in range(1, 5):
+        await page.goto(base_url + "/")
+        await page.wait_for_load_state("domcontentloaded")
+        await page.fill("#usuario", usuario)
+        await page.fill("#senha", senha)
 
-    print("\nResolva o captcha, clique em Entrar e pressione ENTER aqui.")
-    await asyncio.to_thread(input, "ENTER: ")
+        if tentativa <= 3:
+            captcha = await resolve_captcha(page, base_url)
+            print(f"  [login] tentativa {tentativa}: '{captcha}'")
+        else:
+            captcha = (await asyncio.to_thread(input, "  captcha manual: ")).strip()
 
-    await page.wait_for_load_state("domcontentloaded")
-    if "validar.php" in page.url or page.url.rstrip("/") == base_url:
-        print("Login não detectado, verifique o navegador.")
-        return False
-    return True
+        await page.fill("input[name='captcha']", captcha)
+        await page.click("button[type='submit']")
+        await page.wait_for_load_state("domcontentloaded")
+
+        if "validar.php" not in page.url and page.url.rstrip("/") != base_url:
+            print("  [login] OK")
+            return True
+
+        print(f"  [login] falhou (tentativa {tentativa})")
+
+    return False
 
 
 async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
@@ -61,6 +82,7 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
     await page.goto(busca_url)
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(1500)
+    await _fechar_modais(page)
     await page.wait_for_selector("input[name='matricula']", timeout=15_000)
 
     for tentativa in range(1, 5):
@@ -84,6 +106,7 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
         await page.goto(busca_url)
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(1500)
+        await _fechar_modais(page)
         await page.wait_for_selector("input[name='matricula']", timeout=15_000)
 
     return False
