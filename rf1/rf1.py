@@ -1,7 +1,6 @@
+import os
 import signal
 import sys
-import threading
-import time
 import traceback
 from pathlib import Path
 
@@ -9,10 +8,12 @@ import pandas as pd
 from playwright.sync_api import Page, sync_playwright, TimeoutError
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from services.captcha import _solve_2captcha
 from services.utils import aguardar_enter
 
 
 _PFXO = "#ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_"
+_PFXL = "#ctl00_ContentPlaceHolder1_"
 
 
 def _salvar(dados: list[dict], path: Path) -> None:
@@ -21,12 +22,51 @@ def _salvar(dados: list[dict], path: Path) -> None:
     tmp.replace(path)
 
 
+def _login(page: Page, login_url: str, usuario: str, senha: str) -> bool:
+    for tentativa in range(1, 5):
+        page.wait_for_load_state("domcontentloaded")
+        page.fill(f"{_PFXL}txtUsuario", usuario)
+
+        # Tab dispara o onchange → postback popula o dropdown
+        page.press(f"{_PFXL}txtUsuario", "Tab")
+        page.wait_for_load_state("networkidle", timeout=10_000)
+
+        # preenche senha DEPOIS do postback para não ser apagada
+        page.fill(f"{_PFXL}txtSenha", senha)
+
+        if tentativa <= 3:
+            # screenshot do elemento evita dessincronização de sessão
+            captcha_el = page.locator("img[src='Captcha.aspx']")
+            captcha_el.wait_for(state="visible")
+            img_bytes = captcha_el.screenshot()
+            os.makedirs("debug_captchas", exist_ok=True)
+            idx = len(os.listdir("debug_captchas"))
+            with open(f"debug_captchas/captcha_login_{idx}.png", "wb") as f:
+                f.write(img_bytes)
+            captcha = _solve_2captcha(img_bytes)
+            print(f"  [login] tentativa {tentativa}: '{captcha}'")
+        else:
+            captcha = input("  captcha manual: ").strip()
+
+        page.fill(f"{_PFXL}txtValidaCaptcha", captcha)
+        page.click(f"{_PFXL}btnEntrar")
+        page.wait_for_load_state("domcontentloaded")
+
+        if "ConsigAcessoUsuarioLogar" not in page.url:
+            print("  [login] OK")
+            return True
+
+        print(f"  [login] falhou (tentativa {tentativa})")
+        page.goto(login_url)
+
+    return False
+
+
 def _consultar(page: Page, cpf: str) -> dict:
     campo = f"{_PFXO}txtCPF"
-    page.click(campo)
-    page.type(campo, cpf, delay=120)
-    page.keyboard.press("Tab")
-    page.wait_for_timeout(800)
+    page.fill(campo, cpf)
+    page.press(campo, "Tab")
+    page.wait_for_timeout(300)
     page.click(f"{_PFXO}btnListar")
 
     sel_nome = f"{_PFXO}lblNome"
@@ -59,6 +99,8 @@ def _consultar(page: Page, cpf: str) -> dict:
 def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> None:
     login_url = config["url_login"]
     consulta_url = config["url_consulta"]
+    usuario = config["usuario"]
+    senha = config["senha"]
 
     input_file = Path(input_file)
     temp_file = Path(temp_file)
@@ -85,31 +127,35 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
         print("Nada a processar.")
         return
 
-    stop = threading.Event()
+    stop_flag = False
     _orig = signal.getsignal(signal.SIGINT)
 
     def _handle(*_):
+        nonlocal stop_flag
         print("\n\nCtrl+C recebido — encerrando após o registro atual...")
-        stop.set()
+        stop_flag = True
 
     signal.signal(signal.SIGINT, _handle)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False, slow_mo=50)
+        browser = pw.chromium.launch(headless=False)
         page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
 
         try:
             page.goto(login_url)
-            input("\nFaça o login e resolva o CAPTCHA.\nDepois pressione ENTER aqui...")
+            if not _login(page, login_url, usuario, senha):
+                print("Login falhou após várias tentativas.")
+                return
 
             for i, cpf in enumerate(pendentes, 1):
-                if stop.is_set():
+                if stop_flag:
                     print("Processo interrompido.")
                     break
 
                 print(f"\n[{i}/{len(pendentes)}] CPF: {cpf}")
                 try:
-                    page.goto(consulta_url)
+                    if consulta_url not in page.url:
+                        page.goto(consulta_url)
                     page.wait_for_selector(f"{_PFXO}btnListar")
                     try:
                         dados = _consultar(page, cpf)
@@ -126,7 +172,7 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
 
                 _salvar(resultados, temp_file)
 
-            if not stop.is_set():
+            if not stop_flag:
                 df_final = pd.merge(
                     df_original,
                     pd.DataFrame(resultados),
