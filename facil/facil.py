@@ -162,8 +162,16 @@ async def stop_remote_session() -> None:
 
 async def check_login_success(page: Page, base_url: str) -> bool:
     """Verifica se o login foi bem sucedido."""
-    # Como no bot original do Fácil, o login tem sucesso quando saímos da tela de validar/login
-    return "validar.php" not in page.url and page.url.rstrip("/") != base_url
+    # O login tem sucesso quando somos redirecionados para as páginas controladoras internas
+    if "controlador.php" in page.url:
+        return True
+    # Verificação de elementos que só aparecem logados (menu, logout link, etc.)
+    try:
+        if await page.locator("a[href*='logout']").count() > 0 or await page.locator("a[href*='sair']").count() > 0:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _carregar(arquivo: Path) -> list[tuple[str, str]]:
