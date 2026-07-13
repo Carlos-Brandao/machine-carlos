@@ -5,19 +5,19 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import tkinter as tk
-from tkinter import filedialog
-
 import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 
+# As opções de bots disponíveis no dispatcher
 BOTS = ["rf1", "fenix", "facil", "grid"]
 ROOT = Path(__file__).parent
 
 
 def pick_file() -> str:
+    import tkinter as tk
+    from tkinter import filedialog
     root = tk.Tk()
     root.withdraw()
     root.lift()
