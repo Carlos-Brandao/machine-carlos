@@ -89,10 +89,18 @@ def run_bot(bot: str, config: dict, input_file: Path, temp_file: Path, output_fi
 
 def main():
     parser = argparse.ArgumentParser(description="Dispatcher de bots de consulta de margem")
-    parser.add_argument("bot", choices=BOTS, help="Bot a executar")
+    parser.add_argument("bot", choices=BOTS, nargs="?", default="facil", help="Bot a executar (padrão: facil)")
     parser.add_argument("convenio", nargs="?", help="Convênio a consultar")
     parser.add_argument("--list", action="store_true", help="Lista convênios disponíveis")
+    parser.add_argument("-y", "--yes", action="store_true", help="Aceita retomadas automaticamente (útil para automações/cron)")
+    parser.add_argument("-f", "--file", help="Caminho do arquivo de entrada (se omitido, abre a interface gráfica)")
+    parser.add_argument("--cron", action="store_true", help="Executa no modo cron (valida intervalo de 15 dias e retomadas automáticas)")
     args = parser.parse_args()
+
+    if args.cron:
+        args.yes = True
+        if not args.file:
+            args.file = str(ROOT / "data" / "base_paulista_prev.xlsx")
 
     convenios = get_convenios(args.bot)
 
@@ -119,9 +127,30 @@ def main():
             sys.exit(1)
 
     config = get_config(args.bot, convenio)
+    config["convenio"] = convenio
 
     for folder in ["data", "temp", "completed"]:
         (ROOT / folder).mkdir(exist_ok=True)
+
+    if args.cron:
+        # Se não houver arquivo de retomada, validar se já se passaram 15 dias
+        resume = find_resume(args.bot, convenio)
+        if not resume:
+            completed_dir = ROOT / "completed"
+            pattern = f"{args.bot}_{convenio}_*.xlsx"
+            completed_files = sorted(completed_dir.glob(pattern))
+            if completed_files:
+                last_file = completed_files[-1]
+                try:
+                    ts_str = last_file.stem.replace(f"{args.bot}_{convenio}_", "")
+                    last_run_dt = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+                    days_elapsed = (datetime.now() - last_run_dt).days
+                    if days_elapsed < 15:
+                        print(f"[CRON] Última execução concluída em {last_run_dt.strftime('%d/%m/%Y %H:%M:%S')}.")
+                        print(f"[CRON] Apenas {days_elapsed} dias se passaram (mínimo de 15 dias). Encerrando sem nova execução.")
+                        sys.exit(0)
+                except Exception as e:
+                    print(f"[AVISO] Não foi possível ler data do último arquivo: {e}")
 
     resume = find_resume(args.bot, convenio)
     if resume:
@@ -129,7 +158,10 @@ def main():
         n = _count_temp(r_temp, args.bot)
         print(f"\nRetomada disponível: {n} registros já processados")
         print(f"  Arquivo: {r_input.name}")
-        ans = input("Retomar de onde parou? [S/n]: ").strip().lower()
+        if args.yes:
+            ans = "s"
+        else:
+            ans = input("Retomar de onde parou? [S/n]: ").strip().lower()
         if ans in ("", "s"):
             print(f"\nRetomando {r_input.relative_to(ROOT)}")
             print(f"Salvamento parcial:  {r_temp.relative_to(ROOT)}")
@@ -138,11 +170,17 @@ def main():
             return
         print()
 
-    print("Selecione o arquivo de entrada...")
-    src = pick_file()
-    if not src:
-        print("Nenhum arquivo selecionado.")
-        sys.exit(0)
+    if args.file:
+        src = args.file
+        if not Path(src).exists():
+            print(f"Erro: arquivo não encontrado em '{src}'")
+            sys.exit(1)
+    else:
+        print("Selecione o arquivo de entrada...")
+        src = pick_file()
+        if not src:
+            print("Nenhum arquivo selecionado.")
+            sys.exit(0)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     slug = f"{args.bot}_{convenio}_{ts}"
