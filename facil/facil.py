@@ -210,7 +210,7 @@ async def _fechar_modais(page: Page) -> None:
 async def _login(page: Page, base_url: str, usuario: str, senha: str) -> bool:
     # 1. Tentativas Automáticas
     for tentativa in range(1, 4):
-        await page.goto(base_url + "/")
+        await page.goto(base_url + "/", wait_until="domcontentloaded", timeout=20000)
         await page.wait_for_load_state("domcontentloaded")
         await page.fill("#usuario", usuario)
         await page.fill("#senha", senha)
@@ -268,7 +268,7 @@ async def _login(page: Page, base_url: str, usuario: str, senha: str) -> bool:
 async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
     busca_url = f"{base_url}/controlador.php?pagina=busca_servidor_consignatario.php"
 
-    await page.goto(busca_url)
+    await page.goto(busca_url, wait_until="domcontentloaded", timeout=20000)
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(1500)
     await _fechar_modais(page)
@@ -292,7 +292,7 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
         if await page.locator("table.table-consig tbody tr td a").count() > 0:
             return True
 
-        await page.goto(busca_url)
+        await page.goto(busca_url, wait_until="domcontentloaded", timeout=20000)
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(1500)
         await _fechar_modais(page)
