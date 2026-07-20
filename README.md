@@ -63,6 +63,8 @@ machine/
 │   └── utils.py          ← utilitários compartilhados (ex: aguardar ENTER sem corrupção de stdin)
 ├── rf1/
 │   └── rf1.py
+├── easyconsig/
+│   └── easyconsig.py      ← variação do RF1
 ├── fenix/
 │   └── fenix.py
 ├── facil/
@@ -92,10 +94,12 @@ python main.py <bot> [convenio] [--list]
 ```bash
 # Listar convênios disponíveis de um bot
 python main.py rf1 --list
+python main.py easyconsig --list
 python main.py facil --list
 
 # Executar um bot com convênio específico
 python main.py rf1 boavista
+python main.py easyconsig principal
 python main.py fenix acre
 python main.py facil paulista
 python main.py grid roraima
@@ -180,6 +184,14 @@ RF1_{CONVENIO}_URL_LOGIN=
 RF1_{CONVENIO}_URL_CONSULTA=
 RF1_{CONVENIO}_USUARIO=
 RF1_{CONVENIO}_SENHA=
+```
+
+**`easyconsig`** (mesma estrutura de autenticação do RF1)
+```env
+EASYCONSIG_{CONVENIO}_URL_LOGIN=
+EASYCONSIG_{CONVENIO}_URL_CONSULTA=
+EASYCONSIG_{CONVENIO}_USUARIO=
+EASYCONSIG_{CONVENIO}_SENHA=
 ```
 
 **`fenix`**
