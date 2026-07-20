@@ -9,11 +9,18 @@ from playwright.sync_api import Page, sync_playwright, TimeoutError
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.captcha import _solve_2captcha
+from services.notifications import send_telegram_message
 from services.utils import aguardar_enter
 
 
 _PFXO = "#ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_"
 _PFXL = "#ctl00_ContentPlaceHolder1_"
+
+
+def _notificar(bot_name: str, mensagem: str) -> None:
+    texto = f"[{bot_name}] {mensagem}"
+    print(texto)
+    send_telegram_message(texto)
 
 
 def _salvar(dados: list[dict], path: Path) -> None:
@@ -96,7 +103,13 @@ def _consultar(page: Page, cpf: str) -> dict:
     }
 
 
-def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> None:
+def main(
+    config: dict,
+    input_file: Path,
+    temp_file: Path,
+    output_file: Path,
+    bot_name: str = "RF1",
+) -> None:
     login_url = config["url_login"]
     consulta_url = config["url_consulta"]
     usuario = config["usuario"]
@@ -113,6 +126,7 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
         return
 
     lista_cpfs = df_original[coluna_cpf].str.strip().tolist()
+    _notificar(bot_name, f"Iniciando consulta de {len(lista_cpfs)} CPF(s).")
 
     resultados: list[dict] = []
     if temp_file.exists():
@@ -125,6 +139,7 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
     print(f"{len(resultados)} processados, {len(pendentes)} pendentes.")
     if not pendentes:
         print("Nada a processar.")
+        _notificar(bot_name, "Consulta encerrada.")
         return
 
     stop_flag = False
@@ -147,6 +162,7 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
                 print("Login falhou após várias tentativas.")
                 return
 
+            consultas_com_sucesso = 0
             for i, cpf in enumerate(pendentes, 1):
                 if stop_flag:
                     print("Processo interrompido.")
@@ -162,6 +178,12 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
                         dados["CPF_Chave"] = cpf
                         print(f"  {dados['Nome']}")
                         resultados.append(dados)
+                        consultas_com_sucesso += 1
+                        if consultas_com_sucesso % 100 == 0:
+                            _notificar(
+                                bot_name,
+                                f"{consultas_com_sucesso} consultas concluídas com sucesso.",
+                            )
                     except TimeoutError:
                         print("  sem dados.")
                         resultados.append({"CPF_Chave": cpf, "Status_Robo": "Não Encontrado"})
@@ -191,4 +213,5 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
             print(f"\nERRO: {e}")
         finally:
             signal.signal(signal.SIGINT, _orig)
+            _notificar(bot_name, "Consulta encerrada.")
             aguardar_enter()

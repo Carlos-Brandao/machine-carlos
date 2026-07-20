@@ -116,6 +116,11 @@ python main.py grid roraima
 5. Salva progresso parcial em `temp/` a cada linha consultada
 6. Ao concluir, move o resultado final para `completed/` e apaga o temp
 
+Durante a execução, o bot informa o início e o encerramento no terminal. O
+EASYCONSIG também confirma cada bloco de 100 consultas concluídas com sucesso.
+Com `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` configurados no `.env`, esses
+mesmos avisos também são enviados ao Telegram.
+
 **Nomenclatura dos arquivos gerados:**
 ```
 data/rf1_boavista_20260421_143022.xlsx      ← input copiado
