@@ -434,22 +434,24 @@ async def _run(
 
                 print(f"\n[{i}/{len(pendentes)}] mat={matricula} cpf={cpf}")
 
+                base_tag = config.get("base", "PrevPaulista")
                 try:
                     encontrado = await _buscar(page, base_url, matricula, cpf)
                     if not encontrado:
                         print("  AVISO: não encontrado após tentativas.")
-                        salvar({"_matricula": matricula, "_cpf": cpf, "_erro": "não encontrado"})
+                        salvar({"_matricula": matricula, "_cpf": cpf, "base": base_tag, "_erro": "não encontrado"})
                         continue
 
                     dados = await _extrair(page)
                     dados["_matricula"] = matricula
                     dados["_cpf"] = cpf
+                    dados["base"] = base_tag
                     salvar(dados)
                     print(f"  {len(dados)} campos salvos.")
                 except Exception as e:
                     print(f"  ERRO [{type(e).__name__}]: {e}")
                     traceback.print_exc()
-                    salvar({"_matricula": matricula, "_cpf": cpf, "_erro": f"{type(e).__name__}: {e}"})
+                    salvar({"_matricula": matricula, "_cpf": cpf, "base": base_tag, "_erro": f"{type(e).__name__}: {e}"})
 
                 # Report de progresso no Telegram a cada 50 registros
                 if i % 50 == 0:
