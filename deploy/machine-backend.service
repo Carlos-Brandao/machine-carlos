@@ -1,0 +1,13 @@
+[Unit]
+Description=Machine backend API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/ROBO_FACIL
+ExecStart=/root/ROBO_FACIL/env/bin/python -u run_backend_api.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -394,10 +394,10 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
             colunas_extracao = ['Matricula', 'Margem Emprestimo', 'Margem Beneficio', 'Vinculo', 'Secretaria', 'Cargo']
 
             for idx_cpf, cpf in enumerate(unprocessed_cpfs):
-                # Verifica se o horário atual está fora da janela (08h às 19h BRT)
+                # Janela SafeConsig: dias úteis, 07h às 18h BRT.
                 agora_utc = datetime.datetime.now(datetime.timezone.utc)
                 agora_br = agora_utc - datetime.timedelta(hours=3)
-                if agora_br.hour >= 19 or agora_br.hour < 8:
+                if agora_br.weekday() >= 5 or agora_br.hour >= 18 or agora_br.hour < 7:
                     msg_pause = (
                         f"⏳ *Horário Limite Atingido ({agora_br.strftime('%H:%M')})*\n"
                         f"A execução foi pausada de forma segura e resumirá no próximo ciclo.\n"

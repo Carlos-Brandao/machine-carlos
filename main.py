@@ -8,6 +8,8 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
+from services.scheduling import is_within_window, next_start_time
+
 load_dotenv(Path(__file__).parent / ".env")
 
 # As opções de bots disponíveis no dispatcher
@@ -131,6 +133,16 @@ def main():
 
     config = get_config(args.bot, convenio)
     config["convenio"] = convenio
+
+    # Proteção também no dispatcher: mesmo uma execução manual não deve burlar
+    # a política central de dias úteis e janelas por plataforma.
+    if not is_within_window(args.bot):
+        next_start = next_start_time(args.bot)
+        print(
+            f"[AGENDAMENTO] {args.bot} está fora da janela de execução. "
+            f"Próximo início permitido: {next_start.strftime('%d/%m/%Y %H:%M BRT')}."
+        )
+        sys.exit(0)
 
     for folder in ["data", "temp", "completed"]:
         (ROOT / folder).mkdir(exist_ok=True)

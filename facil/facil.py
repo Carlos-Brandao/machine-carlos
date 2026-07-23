@@ -413,11 +413,11 @@ async def _run(
                 return
 
             for i, (matricula, cpf) in enumerate(pendentes, 1):
-                # Verificar janela de horário (07:00 às 21:00 BRT)
+                # Janela Fácil: somente dias úteis, 07:00 às 21:00 BRT.
                 import datetime
                 agora_utc = datetime.datetime.now(datetime.timezone.utc)
                 agora_br = agora_utc - datetime.timedelta(hours=3)
-                if agora_br.hour >= 21 or agora_br.hour < 7:
+                if agora_br.weekday() >= 5 or agora_br.hour >= 21 or agora_br.hour < 7:
                     msg_pause = (
                         f"⏳ *Horário Limite Atingido ({agora_br.strftime('%H:%M')} BRT)*\n"
                         f"A execução do Bot Fácil foi pausada com segurança pois está fora da janela programada (07:00 às 21:00).\n"
