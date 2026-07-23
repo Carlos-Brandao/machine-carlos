@@ -63,6 +63,8 @@ machine/
 │   └── utils.py          ← utilitários compartilhados (ex: aguardar ENTER sem corrupção de stdin)
 ├── rf1/
 │   └── rf1.py
+├── easyconsig/
+│   └── easyconsig.py
 ├── fenix/
 │   └── fenix.py
 ├── facil/
@@ -92,10 +94,12 @@ python main.py <bot> [convenio] [--list]
 ```bash
 # Listar convênios disponíveis de um bot
 python main.py rf1 --list
+python main.py easyconsig --list
 python main.py facil --list
 
 # Executar um bot com convênio específico
 python main.py rf1 boavista
+python main.py easyconsig tamboril
 python main.py fenix acre
 python main.py facil paulista
 python main.py grid roraima
@@ -128,6 +132,7 @@ Planilha `.xlsx` ou `.csv`. Colunas esperadas por bot:
 | Bot     | Colunas obrigatórias       |
 |---------|----------------------------|
 | `rf1`   | `CPF`                      |
+| `easyconsig` | `CPF`                  |
 | `fenix` | `cpf`, `matricula`         |
 | `facil` | `cpf`, `matricula`         |
 | `grid`  | `cpf`                      |
@@ -180,6 +185,19 @@ RF1_{CONVENIO}_URL_LOGIN=
 RF1_{CONVENIO}_URL_CONSULTA=
 RF1_{CONVENIO}_USUARIO=
 RF1_{CONVENIO}_SENHA=
+```
+
+**`easyconsig`**
+```env
+EASYCONSIG_CONVENIOS=tamboril
+EASYCONSIG_TAMBORIL_URL_LOGIN=https://.../ConsigAcessoUsuarioLogar.aspx
+EASYCONSIG_TAMBORIL_URL_CONSULTA=https://.../CADPessoaListar.aspx
+EASYCONSIG_TAMBORIL_USUARIO=
+EASYCONSIG_TAMBORIL_SENHA=
+```
+
+```bash
+python main.py easyconsig tamboril
 ```
 
 **`fenix`**

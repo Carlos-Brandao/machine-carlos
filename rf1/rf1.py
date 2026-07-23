@@ -107,6 +107,7 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
     output_file = Path(output_file)
 
     df_original = pd.read_excel(input_file, dtype=str)
+    df_original.columns = df_original.columns.astype(str).str.strip()
     coluna_cpf = next((c for c in df_original.columns if c.upper() == "CPF"), None)
     if coluna_cpf is None:
         print("Coluna 'CPF' não encontrada.")
