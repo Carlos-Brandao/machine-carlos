@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # As opções de bots disponíveis no dispatcher
-BOTS = ["rf1", "fenix", "facil", "grid"]
+BOTS = ["rf1", "fenix", "facil", "grid", "safeconsig"]
 ROOT = Path(__file__).parent
 
 
@@ -84,6 +84,9 @@ def run_bot(bot: str, config: dict, input_file: Path, temp_file: Path, output_fi
         main(config=config, input_file=input_file, temp_file=temp_file, output_file=output_file)
     elif bot == "grid":
         from grid.grid import main
+        main(config=config, input_file=input_file, temp_file=temp_file, output_file=output_file)
+    elif bot == "safeconsig":
+        from safeconsig.safeconsig import main
         main(config=config, input_file=input_file, temp_file=temp_file, output_file=output_file)
 
 

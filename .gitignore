@@ -32,3 +32,6 @@ debug_captchas/
 # OS
 .DS_Store
 Thumbs.db
+
+# Chrome profile
+chrome_profile/
