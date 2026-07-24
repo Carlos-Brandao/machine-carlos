@@ -307,15 +307,6 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
             send_telegram_message(f"✅ *Login efetuado com sucesso no Consiglog ({convenio.upper()})!*")
 
             for idx_cpf, cpf in enumerate(unprocessed_cpfs):
-                # Checagem de horário (08h às 19h BRT)
-                agora_utc = datetime.datetime.now(datetime.timezone.utc)
-                agora_br = agora_utc - datetime.timedelta(hours=3)
-                if agora_br.hour >= 19 or agora_br.hour < 8:
-                    msg_pause = f"⏳ *Horário Limite Atingido ({agora_br.strftime('%H:%M')})*\nExecução pausada com segurança."
-                    print(f"[INFO] {msg_pause}")
-                    send_telegram_message(msg_pause)
-                    break
-
                 if stop.is_set():
                     print("[INFO] Interrupção (Ctrl+C) detectada.")
                     send_telegram_message(f"⏳ *Execução Pausada:* O robô Consiglog ({convenio.upper()}) foi interrompido.")
