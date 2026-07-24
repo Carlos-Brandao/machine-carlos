@@ -1,0 +1,385 @@
+import os
+import time
+import signal
+import sys
+import datetime
+import traceback
+import threading
+import subprocess
+from pathlib import Path
+import pandas as pd
+import requests
+from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
+
+# --- TELEGRAM INTEGRATION ---
+
+def send_telegram_message(message: str) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        print(f"[ERRO] Falha ao enviar Telegram: {e}")
+
+def send_telegram_document(file_path: Path, caption: str) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    try:
+        with open(file_path, "rb") as f:
+            requests.post(url, data={
+                "chat_id": chat_id,
+                "caption": caption
+            }, files={
+                "document": f
+            }, timeout=45)
+    except Exception as e:
+        print(f"[ERRO] Falha ao enviar documento Telegram: {e}")
+
+# --- LOGIN & EXTRAÇÃO CONSIGLOG ---
+
+def login_consiglog(page: Page, login_url: str, usuario: str, senha: str) -> bool:
+    """Executa o login no portal Consiglog com suporte a 2 etapas, modais e seleção de órgão."""
+    print(f"[INFO] Acessando página de login Consiglog: {login_url}")
+    page.goto(login_url, timeout=30000)
+    page.wait_for_load_state("domcontentloaded")
+
+    start_time = time.time()
+    while time.time() - start_time < 45:
+        url = page.url.lower()
+
+        # 1. Se já saiu de todas as telas de login -> sucesso!
+        if not any(p in url for p in ["login.aspx", "loginsegundaetapa", "loginselecao"]):
+            print(f"[INFO] Login verificado com sucesso! URL atual: {page.url}")
+            return True
+
+        # 2. Tela 1: Login.aspx (Usuário)
+        if ("login.aspx" in url or "login" in url) and page.locator('input#txtLogin').is_visible() and not page.locator('input#txtLogin').is_disabled():
+            print("[LOGIN] Preenchendo campo de usuário...")
+            page.fill('input#txtLogin', usuario)
+            page.click('input#Entrar')
+            page.wait_for_timeout(2000)
+            page.wait_for_load_state("domcontentloaded")
+            continue
+
+        # 3. Tela 2: LoginSegundaEtapa.aspx (Senha)
+        if page.locator('input#txtSenha').is_visible():
+            print("[LOGIN] Preenchendo campo de senha...")
+            page.fill('input#txtSenha', senha)
+            page.click('input#Entrar')
+            page.wait_for_timeout(2500)
+            page.wait_for_load_state("domcontentloaded")
+            continue
+
+        # 4. Modal "Usuário já logado"
+        btn_confirmar_sessao = page.locator('input#ucAjaxModalPopupConfirmacao1_btnConfirmarPopup')
+        if btn_confirmar_sessao.count() > 0 and btn_confirmar_sessao.first.is_visible():
+            print("[LOGIN] Modal de 'Usuário já logado' detectada. Confirmando desconexão...")
+            btn_confirmar_sessao.first.click()
+            page.wait_for_timeout(2500)
+            page.wait_for_load_state("domcontentloaded")
+            continue
+
+        # 5. Modal OK genérica em LoginSelecao
+        btn_ok = page.locator('input#ucAjaxModalPopup1_btnConfirmarPopup')
+        if btn_ok.count() > 0 and btn_ok.first.is_visible():
+            print("[LOGIN] Clicando OK na modal de confirmação...")
+            btn_ok.first.click()
+            page.wait_for_timeout(2000)
+            page.wait_for_load_state("domcontentloaded")
+            continue
+
+        # 6. Tela 3: LoginSelecao.aspx (Botão de imagem do órgão)
+        btn_orgao = page.locator('input[id*="imgEntrar"]')
+        if ("loginselecao" in url or btn_orgao.count() > 0) and btn_orgao.count() > 0 and btn_orgao.first.is_visible():
+            print("[LOGIN] Selecionando órgão (input#gvOrgao_imgEntrar_0)...")
+            btn_orgao.first.click()
+            page.wait_for_timeout(3000)
+            page.wait_for_load_state("domcontentloaded")
+            continue
+
+        page.wait_for_timeout(1000)
+
+    print(f"[ERRO] Timeout no login Consiglog. Permanecemos na URL: {page.url}")
+    return False
+
+def extrair_dados_margem(page: Page) -> dict:
+    """Extrai os dados cadastrais e as margens do formulário Consiglog."""
+    dados = {}
+
+    def _get_val(selector: str) -> str:
+        try:
+            loc = page.locator(selector)
+            if loc.count() > 0:
+                val = loc.input_value() if loc.evaluate("el => el.tagName") == "INPUT" else loc.inner_text()
+                return val.strip()
+        except Exception:
+            pass
+        return ""
+
+    dados["Matricula"] = _get_val('[id*="matriculaTextBox"]') or _get_val("input[name*='matriculaTextBox']")
+    dados["Categoria"] = _get_val('[id*="categoriaTextBox"]') or _get_val("input[name*='categoriaTextBox']")
+    dados["Lotacao"] = _get_val('[id*="txtLotacao"]') or _get_val("input[name*='txtLotacao']")
+    dados["Situacao"] = _get_val('[id*="txtSituacao"]') or _get_val("input[name*='txtSituacao']")
+
+    # Raspa as linhas da tabela de margens (índices 0 a 5)
+    for i in range(6):
+        hdr_sel = f'[id*="headerservico_{i}"], [id*="headerservico"][id$="_{i}"]'
+        res_sel = f'[id*="TdMargemReservada_{i}"], [id*="TdMargemReservada"][id$="_{i}"]'
+
+        hdr_loc = page.locator(hdr_sel)
+        if hdr_loc.count() > 0:
+            servico_nome = hdr_loc.first.inner_text().strip()
+            if servico_nome:
+                res_val = _get_val(res_sel)
+                dados[f"Serviço_{i}_Nome"] = servico_nome
+                dados[f"Serviço_{i}_Margem_Reservada"] = res_val
+
+                # Tenta capturar todas as células (td) da linha correspondente para margem total e disponível
+                try:
+                    row_tr = hdr_loc.first.locator("xpath=ancestor::tr[1]")
+                    tds = row_tr.locator("td").all_inner_texts()
+                    clean_tds = [t.strip() for t in tds if t.strip()]
+                    dados[f"Serviço_{i}_Detalhes"] = " | ".join(clean_tds)
+                except Exception:
+                    pass
+
+    return dados
+
+# --- MAIN BOT RUNNER ---
+
+def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop: threading.Event) -> None:
+    login_url = config.get("url_login", "https://saec.consiglog.com.br/Login.aspx")
+    consulta_url = config.get("url_consulta", "https://saec.consiglog.com.br/Margem/ConsultaMargemDados.aspx")
+    usuario = config["usuario"]
+    senha = config["senha"]
+    convenio = config.get("convenio", "itabuna").lower()
+
+    if temp_file.exists():
+        print(f"[INFO] Carregando progresso anterior de {temp_file}")
+        df = pd.read_excel(temp_file, dtype=str)
+    else:
+        print(f"[INFO] Iniciando novo processamento. Copiando de {input_file}")
+        df = pd.read_excel(input_file, dtype=str)
+
+        colunas_base = ['Matricula', 'Categoria', 'Lotacao', 'Situacao', 'Status_Robo']
+        for col in colunas_base:
+            if col not in df.columns:
+                df[col] = None
+        df.to_excel(temp_file, index=False)
+
+    coluna_cpf = next((c for c in df.columns if c.upper() == "CPF"), None)
+    if not coluna_cpf:
+        print("[ERRO] A planilha de entrada precisa ter a coluna 'CPF'.")
+        return
+
+    # Identifica CPFs já processados
+    processed_cpfs = set()
+    for _, row in df.iterrows():
+        status = str(row.get('Status_Robo', '')).strip()
+        if status in ['Sucesso', 'NÃO ENCONTRADO']:
+            processed_cpfs.add(row[coluna_cpf])
+
+    unique_cpfs = df[coluna_cpf].dropna().unique()
+    unprocessed_cpfs = [cpf for cpf in unique_cpfs if cpf not in processed_cpfs]
+    total_cpfs_to_process = len(unprocessed_cpfs)
+
+    print(f'[INFO] Bot CONSIGLOG — Convênio: {convenio.upper()}')
+    print(f'[INFO] CPFs já processados: {len(processed_cpfs)}')
+    print(f'[INFO] CPFs a processar: {total_cpfs_to_process}')
+    send_telegram_message(
+        f"🚀 *Robô Consiglog ({convenio.upper()}) Iniciado!*\n"
+        f"- Total do Lote: {len(unique_cpfs)} CPFs\n"
+        f"- Já processados: {len(processed_cpfs)}\n"
+        f"- A processar: {total_cpfs_to_process}"
+    )
+
+    if total_cpfs_to_process == 0:
+        print("[INFO] Todos os registros já foram processados.")
+        df.to_excel(output_file, index=False)
+        if temp_file.exists():
+            temp_file.unlink()
+        return
+
+    profile_dir = Path(__file__).parent.parent / "chrome_profile"
+    headless_mode = os.environ.get('HEADLESS', 'False').lower() == 'true'
+
+    with sync_playwright() as p:
+        try:
+            print(f'[INFO] Inicializando navegador Chrome (Headless={headless_mode})...')
+            try:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=headless_mode,
+                    channel="chrome",
+                    viewport={"width": 1280, "height": 720},
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-gpu"]
+                )
+            except Exception:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=headless_mode,
+                    viewport={"width": 1280, "height": 720},
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-gpu"]
+                )
+            
+            page = context.pages[0]
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+            
+        except Exception as e:
+            print(f'[ERRO] Falha ao inicializar o navegador: {e}')
+            send_telegram_message(f"❌ *Erro de Inicialização:* {e}")
+            return
+
+        try:
+            if not login_consiglog(page, login_url, usuario, senha):
+                send_telegram_message(f"❌ *Falha no Login:* Não foi possível conectar ao Consiglog ({convenio.upper()}).")
+                return
+
+            send_telegram_message(f"✅ *Login efetuado com sucesso no Consiglog ({convenio.upper()})!*")
+
+            for idx_cpf, cpf in enumerate(unprocessed_cpfs):
+                # Checagem de horário (08h às 19h BRT)
+                agora_utc = datetime.datetime.now(datetime.timezone.utc)
+                agora_br = agora_utc - datetime.timedelta(hours=3)
+                if agora_br.hour >= 19 or agora_br.hour < 8:
+                    msg_pause = f"⏳ *Horário Limite Atingido ({agora_br.strftime('%H:%M')})*\nExecução pausada com segurança."
+                    print(f"[INFO] {msg_pause}")
+                    send_telegram_message(msg_pause)
+                    break
+
+                if stop.is_set():
+                    print("[INFO] Interrupção (Ctrl+C) detectada.")
+                    send_telegram_message(f"⏳ *Execução Pausada:* O robô Consiglog ({convenio.upper()}) foi interrompido.")
+                    break
+
+                raw_cpf = str(cpf).strip().split('.')[0].split('-')[0]
+                cpf_padded = raw_cpf.zfill(11)
+
+                print(f'[{idx_cpf + 1}/{total_cpfs_to_process}] Consultando CPF: {cpf_padded}')
+
+                try:
+                    if "ConsultaMargem" not in page.url:
+                        print(f"[INFO] Navegando para tela de consulta a partir de {page.url}...")
+                        
+                        # 1. Fecha modais de aviso/pendência se existirem na Inicial.aspx
+                        page.evaluate("""() => {
+                            const btns = Array.from(document.querySelectorAll('input[id*="btnConfirmarPopup"], input[id*="btnOK"]'));
+                            btns.forEach(b => { if (b.offsetWidth > 0 && b.offsetHeight > 0) b.click(); });
+                        }""")
+                        page.wait_for_timeout(1500)
+
+                        # 2. Expande o menu 'Margem' e clica no subitem de Consulta
+                        page.evaluate("""() => {
+                            // Clica no item pai 'Margem' para expandir
+                            const parent = Array.from(document.querySelectorAll('a')).find(a => a.innerText.includes('Margem') || a.href.includes('#Margem'));
+                            if (parent) parent.click();
+                        }""")
+                        page.wait_for_timeout(1000)
+
+                        # 3. Clica no link real para ConsultaMargemDados.aspx
+                        page.evaluate("""() => {
+                            const sub = Array.from(document.querySelectorAll('a')).find(a => a.href.includes('ConsultaMargem') && !a.href.endsWith('.pdf'));
+                            if (sub) sub.click();
+                        }""")
+                        page.wait_for_timeout(3000)
+                        page.wait_for_load_state("domcontentloaded")
+
+                        # Se ainda não for para ConsultaMargem, tenta o goto direto agora que a sessão foi inicializada no menu
+                        if "ConsultaMargem" not in page.url:
+                            print(f"[INFO] Navegando diretamente para a URL de consulta: {consulta_url}")
+                            page.goto(consulta_url, timeout=20000)
+                            page.wait_for_load_state("domcontentloaded")
+
+                    # Aguarda e preenche o campo de CPF
+                    cpf_selector = 'input[name*="cpfTextBox"], input[id*="cpfTextBox"], input[id*="cpf"], input[name*="cpf"]'
+                    btn_selector = 'input[name*="pesquisarButton"], input[id*="pesquisarButton"]'
+
+                    page.wait_for_selector(cpf_selector, state='visible', timeout=15000)
+                    page.fill(cpf_selector, cpf_padded)
+                    page.click(btn_selector)
+
+                    page.wait_for_timeout(3000)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                    except Exception:
+                        pass
+
+                    # Checa se encontrou os dados ou se exibiu erro
+                    if page.locator('[id*="matriculaTextBox"]').count() > 0 or page.locator('[id*="rptMargens"]').count() > 0:
+                        dados_extraidos = extrair_dados_margem(page)
+
+                        matching_rows = df[df[coluna_cpf] == cpf]
+                        for idx in matching_rows.index:
+                            for key, val in dados_extraidos.items():
+                                if key not in df.columns:
+                                    df[key] = None
+                                df.at[idx, key] = val
+                            df.at[idx, 'Status_Robo'] = 'Sucesso'
+
+                        print(f'[SUCESSO] CPF {cpf_padded} consultado. Matrícula: {dados_extraidos.get("Matricula", "N/A")}')
+
+                    else:
+                        print(f'[AVISO] CPF {cpf_padded} não localizado ou sem dados.')
+                        matching_rows = df[df[coluna_cpf] == cpf]
+                        for idx in matching_rows.index:
+                            df.at[idx, 'Status_Robo'] = 'NÃO ENCONTRADO'
+
+                except PlaywrightTimeoutError as err:
+                    print(f'[AVISO] Timeout ao consultar CPF {cpf_padded}: {err}')
+                    matching_rows = df[df[coluna_cpf] == cpf]
+                    for idx in matching_rows.index:
+                        df.at[idx, 'Status_Robo'] = 'TIMEOUT'
+
+                except Exception as e:
+                    print(f'[ERRO] Falha no CPF {cpf_padded}: {e}')
+                    matching_rows = df[df[coluna_cpf] == cpf]
+                    for idx in matching_rows.index:
+                        df.at[idx, 'Status_Robo'] = 'ERRO'
+
+                # Salva o progresso incremental a cada 5 CPFs ou no último
+                if (idx_cpf + 1) % 5 == 0 or (idx_cpf + 1) == total_cpfs_to_process:
+                    try:
+                        df.to_excel(temp_file, index=False)
+                        print('[INFO] Progresso incremental salvo no temp_file.')
+                    except Exception as e:
+                        print(f'[ERRO] Falha ao salvar progresso incremental: {e}')
+
+            else:
+                print('[INFO] Execução de todo o lote concluída com sucesso!')
+                df.to_excel(output_file, index=False)
+                if temp_file.exists():
+                    temp_file.unlink()
+                send_telegram_message(f"✅ *Execução Consiglog ({convenio.upper()}) Concluída!*")
+                send_telegram_document(output_file, f"📊 *Resultados Consiglog — {convenio.upper()}*")
+
+        except Exception as e:
+            print(f"[ERRO] Erro na execução geral: {e}")
+            traceback.print_exc()
+            send_telegram_message(f"🚨 *Erro Crítico no Robô Consiglog:* {e}")
+        finally:
+            context.close()
+
+def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> None:
+    stop = threading.Event()
+    _orig = signal.getsignal(signal.SIGINT)
+
+    def _handle(*_):
+        print("\n\nCtrl+C recebido — encerrando após o registro atual...")
+        stop.set()
+
+    signal.signal(signal.SIGINT, _handle)
+
+    try:
+        run(config, Path(input_file), Path(temp_file), Path(output_file), stop)
+    finally:
+        signal.signal(signal.SIGINT, _orig)
