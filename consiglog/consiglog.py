@@ -6,6 +6,7 @@ import datetime
 import traceback
 import threading
 import subprocess
+import unicodedata
 from pathlib import Path
 import pandas as pd
 import requests
@@ -112,15 +113,39 @@ def login_consiglog(page: Page, login_url: str, usuario: str, senha: str) -> boo
     print(f"[ERRO] Timeout no login Consiglog. Permanecemos na URL: {page.url}")
     return False
 
+def remover_acentos(texto: str) -> str:
+    nfkd = unicodedata.normalize('NFKD', texto)
+    return "".join([c for c in nfkd if not unicodedata.combining(c)]).upper().strip()
+
 def extrair_dados_margem(page: Page) -> dict:
-    """Extrai os dados cadastrais e as margens do formulário Consiglog."""
-    dados = {}
+    """Extrai os dados cadastrais e as margens com colunas padronizadas do Consiglog."""
+    dados = {
+        "Matricula": "",
+        "Categoria": "",
+        "Lotacao": "",
+        "Situacao": "",
+        "MARGEM EMPRESTIMO TOTAL": "",
+        "MARGEM EMPRESTIMO RESERVADA": "",
+        "MARGEM EMPRESTIMO DISPONIVEL": "",
+        "MARGEM BENEFICIO COMPRA TOTAL": "",
+        "MARGEM BENEFICIO COMPRA RESERVADA": "",
+        "MARGEM BENEFICIO COMPRA DISPONIVEL": "",
+        "MARGEM BENEFICIO SAQUE TOTAL": "",
+        "MARGEM BENEFICIO SAQUE RESERVADA": "",
+        "MARGEM BENEFICIO SAQUE DISPONIVEL": "",
+        "MARGEM EVENTUAIS TOTAL": "",
+        "MARGEM EVENTUAIS RESERVADA": "",
+        "MARGEM EVENTUAIS DISPONIVEL": "",
+        "MARGEM BENEFICIO TOTAL": "",
+        "MARGEM BENEFICIO RESERVADA": "",
+        "MARGEM BENEFICIO DISPONIVEL": "",
+    }
 
     def _get_val(selector: str) -> str:
         try:
             loc = page.locator(selector)
             if loc.count() > 0:
-                val = loc.input_value() if loc.evaluate("el => el.tagName") == "INPUT" else loc.inner_text()
+                val = loc.first.input_value() if loc.first.evaluate("el => el.tagName") == "INPUT" else loc.first.inner_text()
                 return val.strip()
         except Exception:
             pass
@@ -131,27 +156,42 @@ def extrair_dados_margem(page: Page) -> dict:
     dados["Lotacao"] = _get_val('[id*="txtLotacao"]') or _get_val("input[name*='txtLotacao']")
     dados["Situacao"] = _get_val('[id*="txtSituacao"]') or _get_val("input[name*='txtSituacao']")
 
-    # Raspa as linhas da tabela de margens (índices 0 a 5)
-    for i in range(6):
+    # Raspa as linhas da tabela de margens (índices 0 a 9)
+    for i in range(10):
         hdr_sel = f'[id*="headerservico_{i}"], [id*="headerservico"][id$="_{i}"]'
-        res_sel = f'[id*="TdMargemReservada_{i}"], [id*="TdMargemReservada"][id$="_{i}"]'
-
         hdr_loc = page.locator(hdr_sel)
         if hdr_loc.count() > 0:
-            servico_nome = hdr_loc.first.inner_text().strip()
-            if servico_nome:
-                res_val = _get_val(res_sel)
-                dados[f"Serviço_{i}_Nome"] = servico_nome
-                dados[f"Serviço_{i}_Margem_Reservada"] = res_val
+            texto_bruto = hdr_loc.first.inner_text()
+            if texto_bruto:
+                texto_limpo = texto_bruto.replace("\n", "\t")
+                partes = [p.strip() for p in texto_limpo.split("\t") if p.strip()]
 
-                # Tenta capturar todas as células (td) da linha correspondente para margem total e disponível
-                try:
-                    row_tr = hdr_loc.first.locator("xpath=ancestor::tr[1]")
-                    tds = row_tr.locator("td").all_inner_texts()
-                    clean_tds = [t.strip() for t in tds if t.strip()]
-                    dados[f"Serviço_{i}_Detalhes"] = " | ".join(clean_tds)
-                except Exception:
-                    pass
+                if len(partes) >= 4:
+                    nome_servico = remover_acentos(partes[0])
+                    val_total = partes[1]
+                    val_reservada = partes[2]
+                    val_disponivel = partes[3]
+
+                    if "EMPRESTIMO" in nome_servico:
+                        dados["MARGEM EMPRESTIMO TOTAL"] = val_total
+                        dados["MARGEM EMPRESTIMO RESERVADA"] = val_reservada
+                        dados["MARGEM EMPRESTIMO DISPONIVEL"] = val_disponivel
+                    elif "BENEFICIO COMPRA" in nome_servico:
+                        dados["MARGEM BENEFICIO COMPRA TOTAL"] = val_total
+                        dados["MARGEM BENEFICIO COMPRA RESERVADA"] = val_reservada
+                        dados["MARGEM BENEFICIO COMPRA DISPONIVEL"] = val_disponivel
+                    elif "BENEFICIO SAQUE" in nome_servico:
+                        dados["MARGEM BENEFICIO SAQUE TOTAL"] = val_total
+                        dados["MARGEM BENEFICIO SAQUE RESERVADA"] = val_reservada
+                        dados["MARGEM BENEFICIO SAQUE DISPONIVEL"] = val_disponivel
+                    elif "EVENTUAIS" in nome_servico:
+                        dados["MARGEM EVENTUAIS TOTAL"] = val_total
+                        dados["MARGEM EVENTUAIS RESERVADA"] = val_reservada
+                        dados["MARGEM EVENTUAIS DISPONIVEL"] = val_disponivel
+                    elif "BENEFICIO" in nome_servico:
+                        dados["MARGEM BENEFICIO TOTAL"] = val_total
+                        dados["MARGEM BENEFICIO RESERVADA"] = val_reservada
+                        dados["MARGEM BENEFICIO DISPONIVEL"] = val_disponivel
 
     return dados
 
@@ -171,7 +211,15 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
         print(f"[INFO] Iniciando novo processamento. Copiando de {input_file}")
         df = pd.read_excel(input_file, dtype=str)
 
-        colunas_base = ['Matricula', 'Categoria', 'Lotacao', 'Situacao', 'Status_Robo']
+        colunas_base = [
+            'Matricula', 'Categoria', 'Lotacao', 'Situacao',
+            'MARGEM EMPRESTIMO TOTAL', 'MARGEM EMPRESTIMO RESERVADA', 'MARGEM EMPRESTIMO DISPONIVEL',
+            'MARGEM BENEFICIO COMPRA TOTAL', 'MARGEM BENEFICIO COMPRA RESERVADA', 'MARGEM BENEFICIO COMPRA DISPONIVEL',
+            'MARGEM BENEFICIO SAQUE TOTAL', 'MARGEM BENEFICIO SAQUE RESERVADA', 'MARGEM BENEFICIO SAQUE DISPONIVEL',
+            'MARGEM EVENTUAIS TOTAL', 'MARGEM EVENTUAIS RESERVADA', 'MARGEM EVENTUAIS DISPONIVEL',
+            'MARGEM BENEFICIO TOTAL', 'MARGEM BENEFICIO RESERVADA', 'MARGEM BENEFICIO DISPONIVEL',
+            'Status_Robo'
+        ]
         for col in colunas_base:
             if col not in df.columns:
                 df[col] = None
