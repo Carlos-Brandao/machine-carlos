@@ -58,12 +58,31 @@ def login_consiglog(page: Page, login_url: str, usuario: str, senha: str) -> boo
     while time.time() - start_time < 45:
         url = page.url.lower()
 
-        # 1. Se já saiu de todas as telas de login -> sucesso!
-        if not any(p in url for p in ["login.aspx", "loginsegundaetapa", "loginselecao"]):
+        # 1. Se caiu na tela de Erro.aspx -> recarrega login limpo
+        if "erro.aspx" in url:
+            print("[LOGIN] Redirecionado para Erro.aspx. Voltando para a tela de login...")
+            page.goto(login_url, timeout=30000)
+            page.wait_for_load_state("domcontentloaded")
+            continue
+
+        # 2. Se já saiu de todas as telas de login e erro -> sucesso!
+        if not any(p in url for p in ["login.aspx", "loginsegundaetapa", "loginselecao", "erro.aspx"]):
             print(f"[INFO] Login verificado com sucesso! URL atual: {page.url}")
             return True
 
-        # 2. Tela 1: Login.aspx (Usuário)
+        # 3. Modal "Usuário já logado" (prioridade alta)
+        btn_confirmar_sessao = page.locator('input#ucAjaxModalPopupConfirmacao1_btnConfirmarPopup')
+        if btn_confirmar_sessao.count() > 0 and btn_confirmar_sessao.first.is_visible():
+            print("[LOGIN] Modal de 'Usuário já logado' detectada. Confirmando desconexão...")
+            try:
+                btn_confirmar_sessao.first.click()
+            except Exception:
+                page.evaluate("if(document.getElementById('ucAjaxModalPopupConfirmacao1_btnConfirmarPopup')) document.getElementById('ucAjaxModalPopupConfirmacao1_btnConfirmarPopup').click()")
+            page.wait_for_timeout(2500)
+            page.wait_for_load_state("domcontentloaded")
+            continue
+
+        # 4. Tela 1: Login.aspx (Usuário)
         if ("login.aspx" in url or "login" in url) and page.locator('input#txtLogin').is_visible() and not page.locator('input#txtLogin').is_disabled():
             print("[LOGIN] Preenchendo campo de usuário...")
             page.fill('input#txtLogin', usuario)
@@ -72,7 +91,7 @@ def login_consiglog(page: Page, login_url: str, usuario: str, senha: str) -> boo
             page.wait_for_load_state("domcontentloaded")
             continue
 
-        # 3. Tela 2: LoginSegundaEtapa.aspx (Senha)
+        # 5. Tela 2: LoginSegundaEtapa.aspx (Senha)
         if page.locator('input#txtSenha').is_visible():
             print("[LOGIN] Preenchendo campo de senha...")
             page.fill('input#txtSenha', senha)
@@ -81,31 +100,23 @@ def login_consiglog(page: Page, login_url: str, usuario: str, senha: str) -> boo
             page.wait_for_load_state("domcontentloaded")
             continue
 
-        # 4. Modal "Usuário já logado"
-        btn_confirmar_sessao = page.locator('input#ucAjaxModalPopupConfirmacao1_btnConfirmarPopup')
-        if btn_confirmar_sessao.count() > 0 and btn_confirmar_sessao.first.is_visible():
-            print("[LOGIN] Modal de 'Usuário já logado' detectada. Confirmando desconexão...")
-            btn_confirmar_sessao.first.click()
-            page.wait_for_timeout(2500)
-            page.wait_for_load_state("domcontentloaded")
-            continue
+        # 6. Tela 3: LoginSelecao.aspx (Órgão + Modal OK)
+        if "loginselecao" in url or page.locator('input[id*="imgEntrar"]').count() > 0:
+            btn_orgao = page.locator('input[id*="imgEntrar"]')
+            if btn_orgao.count() > 0 and btn_orgao.first.is_visible():
+                print("[LOGIN] Selecionando órgão (input#gvOrgao_imgEntrar_0)...")
+                btn_orgao.first.click()
+                page.wait_for_timeout(2000)
 
-        # 5. Modal OK genérica em LoginSelecao
-        btn_ok = page.locator('input#ucAjaxModalPopup1_btnConfirmarPopup')
-        if btn_ok.count() > 0 and btn_ok.first.is_visible():
-            print("[LOGIN] Clicando OK na modal de confirmação...")
-            btn_ok.first.click()
-            page.wait_for_timeout(2000)
-            page.wait_for_load_state("domcontentloaded")
-            continue
-
-        # 6. Tela 3: LoginSelecao.aspx (Botão de imagem do órgão)
-        btn_orgao = page.locator('input[id*="imgEntrar"]')
-        if ("loginselecao" in url or btn_orgao.count() > 0) and btn_orgao.count() > 0 and btn_orgao.first.is_visible():
-            print("[LOGIN] Selecionando órgão (input#gvOrgao_imgEntrar_0)...")
-            btn_orgao.first.click()
-            page.wait_for_timeout(3000)
-            page.wait_for_load_state("domcontentloaded")
+            btn_ok = page.locator('input#ucAjaxModalPopup1_btnConfirmarPopup')
+            if btn_ok.count() > 0 and btn_ok.first.is_visible():
+                print("[LOGIN] Clicando OK na modal de confirmação do órgão...")
+                btn_ok.first.click()
+                try:
+                    page.wait_for_url(lambda u: "inicial" in u.lower() or "erro" in u.lower() or "margem" in u.lower(), timeout=10000)
+                except Exception:
+                    page.wait_for_timeout(3000)
+                page.wait_for_load_state("domcontentloaded")
             continue
 
         page.wait_for_timeout(1000)
@@ -348,11 +359,29 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                             page.goto(consulta_url, timeout=20000)
                             page.wait_for_load_state("domcontentloaded")
 
-                    # Aguarda e preenche o campo de CPF
-                    cpf_selector = 'input[name*="cpfTextBox"], input[id*="cpfTextBox"], input[id*="cpf"], input[name*="cpf"]'
+                    # 1. Garante que estamos na tela com o campo de CPF limpo e pronto
+                    cpf_loc = page.locator('input#body_cpfTextBox, input[name*="cpfTextBox"]')
+                    if cpf_loc.count() == 0 or not cpf_loc.first.is_visible():
+                        btn_canc = page.locator('input[id*="cancelarButton"], input[id*="btnVoltar"], input[value*="Voltar"], input[value*="Cancelar"]')
+                        if btn_canc.count() > 0 and btn_canc.first.is_visible():
+                            try:
+                                btn_canc.first.click()
+                                page.wait_for_timeout(1500)
+                                page.wait_for_load_state("domcontentloaded")
+                            except Exception:
+                                pass
+                        
+                        if cpf_loc.count() == 0 or not cpf_loc.first.is_visible():
+                            print(f"[INFO] Recarregando URL de consulta: {consulta_url}")
+                            page.goto(consulta_url, timeout=20000)
+                            page.wait_for_load_state("domcontentloaded")
+
+                    # 2. Preenche e pesquisa o CPF
+                    cpf_selector = 'input[name*="cpfTextBox"], input[id*="cpfTextBox"]'
                     btn_selector = 'input[name*="pesquisarButton"], input[id*="pesquisarButton"]'
 
                     page.wait_for_selector(cpf_selector, state='visible', timeout=15000)
+                    page.fill(cpf_selector, "")
                     page.fill(cpf_selector, cpf_padded)
                     page.click(btn_selector)
 
@@ -364,23 +393,41 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
 
                     # Checa se encontrou os dados ou se exibiu erro
                     if page.locator('[id*="matriculaTextBox"]').count() > 0 or page.locator('[id*="rptMargens"]').count() > 0:
+                        # Verifica especificamente se há múltiplos elementos/opções de seleção de matrícula na página
+                        multiplas_matrculas = []
+                        selects = page.locator('select[id*="matricula"], select[id*="Matricula"], select[id*="ddl"], select[name*="matricula"]')
+                        for s_idx in range(selects.count()):
+                            sel_el = selects.nth(s_idx)
+                            opt_texts = [o.strip() for o in sel_el.locator('option').all_inner_texts() if o.strip()]
+                            if len(opt_texts) > 1:
+                                multiplas_matrculas.append(f"Select #{s_idx} ({sel_el.evaluate('el => el.id')}): {opt_texts}")
+
+                        grid_tables = page.locator('table[id*="gvMatricula"], table[id*="gvServidor"], table[id*="gvSelecao"], table[id*="gvVinculo"]')
+                        for g_idx in range(grid_tables.count()):
+                            t_el = grid_tables.nth(g_idx)
+                            rows = [r.inner_text().strip() for r in t_el.locator('tr').all() if r.inner_text().strip()]
+                            if len(rows) > 2:
+                                multiplas_matrculas.append(f"Grid #{g_idx} ({t_el.evaluate('el => el.id')}): {rows}")
+
                         dados_extraidos = extrair_dados_margem(page)
+                        status_final = f"Sucesso (Múltiplas Matrículas: {len(multiplas_matrculas)})" if multiplas_matrculas else "Sucesso"
+                        if multiplas_matrculas:
+                            print(f"[DETECÇÃO MÚLTIPLA] CPF {cpf} possui MÚLTIPLAS MATRÍCULAS/OPÇÕES: {multiplas_matrculas}")
 
                         matching_rows = df[df[coluna_cpf] == cpf]
                         for idx in matching_rows.index:
-                            for key, val in dados_extraidos.items():
-                                if key not in df.columns:
-                                    df[key] = None
-                                df.at[idx, key] = val
-                            df.at[idx, 'Status_Robo'] = 'Sucesso'
+                            for k, v in dados_extraidos.items():
+                                if k in df.columns:
+                                    df.at[idx, k] = v
+                            df.at[idx, "Status_Robo"] = status_final
 
-                        print(f'[SUCESSO] CPF {cpf_padded} consultado. Matrícula: {dados_extraidos.get("Matricula", "N/A")}')
+                        print(f"[SUCESSO] CPF {cpf_padded} consultado. Matrícula: {dados_extraidos.get('Matricula', 'N/A')}")
 
                     else:
                         print(f'[AVISO] CPF {cpf_padded} não localizado ou sem dados.')
                         matching_rows = df[df[coluna_cpf] == cpf]
                         for idx in matching_rows.index:
-                            df.at[idx, 'Status_Robo'] = 'NÃO ENCONTRADO'
+                            df.at[idx, "Status_Robo"] = "NÃO ENCONTRADO"
 
                 except PlaywrightTimeoutError as err:
                     print(f'[AVISO] Timeout ao consultar CPF {cpf_padded}: {err}')
