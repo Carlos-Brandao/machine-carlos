@@ -24,9 +24,9 @@ def setup_vps():
         print(f"[ERRO] Falha ao conectar ao VPS: {e}")
         return False
 
-    # Comando Cron para rodar todo dia às 07:00 da manhã
+    # Comando Cron para rodar somente em dias úteis, às 07:00 BRT.
     # A flag --cron gerencia automaticamente o intervalo de 15 dias e retomadas automáticas
-    cron_line = f"0 7 * * * cd {REMOTE_DIR} && xvfb-run -a --server-args='-screen 0 1280x720x24' ./env/bin/python main.py facil paulista --cron >> cron_facil.log 2>&1"
+    cron_line = f"0 7 * * 1-5 cd {REMOTE_DIR} && xvfb-run -a --server-args='-screen 0 1280x720x24' ./env/bin/python main.py facil paulista --cron >> cron_facil.log 2>&1"
 
     print("Buscando crontab atual no VPS...")
     stdin, stdout, stderr = ssh.exec_command("crontab -l")
