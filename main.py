@@ -37,7 +37,7 @@ def get_convenios(bot: str) -> list[str]:
 
 
 def get_config(bot: str, convenio: str) -> dict:
-    prefix = f"{bot.upper()}_{convenio.upper()}_"
+    prefix = f"{bot.upper()}_{convenio.upper().replace('-', '_')}_"
     config = {
         key[len(prefix):].lower(): val
         for key, val in os.environ.items()
