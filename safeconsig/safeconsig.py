@@ -394,23 +394,6 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
             colunas_extracao = ['Matricula', 'Margem Emprestimo', 'Margem Beneficio', 'Vinculo', 'Secretaria', 'Cargo']
 
             for idx_cpf, cpf in enumerate(unprocessed_cpfs):
-                # Verifica se o horário atual está fora da janela (08h às 19h BRT)
-                agora_utc = datetime.datetime.now(datetime.timezone.utc)
-                agora_br = agora_utc - datetime.timedelta(hours=3)
-                if agora_br.hour >= 19 or agora_br.hour < 8:
-                    msg_pause = (
-                        f"⏳ *Horário Limite Atingido ({agora_br.strftime('%H:%M')})*\n"
-                        f"A execução foi pausada de forma segura e resumirá no próximo ciclo.\n"
-                        f"- CPFs consultados hoje: {idx_cpf}"
-                    )
-                    print(f"[INFO] {msg_pause}")
-                    send_telegram_message(msg_pause)
-                    send_telegram_document(
-                        temp_file, 
-                        f"📊 *Progresso Parcial ({convenio.upper()} - {agora_br.strftime('%H:%M')})*"
-                    )
-                    break
-
                 if stop.is_set():
                     print("[INFO] Interrupção (Ctrl+C) detectada.")
                     send_telegram_message(f"⏳ *Execução Pausada:* O robô {convenio.upper()} foi interrompido e retomará de onde parou.")

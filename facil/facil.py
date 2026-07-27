@@ -413,21 +413,6 @@ async def _run(
                 return
 
             for i, (matricula, cpf) in enumerate(pendentes, 1):
-                # Verificar janela de horário (07:00 às 21:00 BRT)
-                import datetime
-                agora_utc = datetime.datetime.now(datetime.timezone.utc)
-                agora_br = agora_utc - datetime.timedelta(hours=3)
-                if agora_br.hour >= 21 or agora_br.hour < 7:
-                    msg_pause = (
-                        f"⏳ *Horário Limite Atingido ({agora_br.strftime('%H:%M')} BRT)*\n"
-                        f"A execução do Bot Fácil foi pausada com segurança pois está fora da janela programada (07:00 às 21:00).\n"
-                        f"Progresso atual: {i-1}/{len(pendentes)} consultados nesta rodada.\n"
-                        f"O robô salvará o estado atual e retomará no próximo ciclo."
-                    )
-                    print(f"[INFO] {msg_pause}")
-                    await send_telegram_message(msg_pause)
-                    break
-
                 if stop.is_set():
                     print("Processo interrompido.")
                     break
@@ -463,16 +448,20 @@ async def _run(
             csv_fh.close()
 
             if not stop.is_set():
-                pd.read_csv(temp_csv, dtype=str).to_excel(output_file, index=False)
-                temp_csv.unlink()
-                print(f"\nConcluído → {output_file}")
+                if temp_csv.exists() and temp_csv.stat().st_size > 0:
+                    pd.read_csv(temp_csv, dtype=str).to_excel(output_file, index=False)
+                    temp_csv.unlink()
+                    print(f"\nConcluído → {output_file}")
 
-                await send_telegram_message("✅ *Processamento Concluído com Sucesso pelo Bot Fácil!*")
-                await send_telegram_document(
-                    output_file,
-                    f"📊 *Resultados de Servidores Encontrados — {convenio.upper()}*\n"
-                    f"- Total processado: {len(pendentes)} registros"
-                )
+                    await send_telegram_message("✅ *Processamento Concluído com Sucesso pelo Bot Fácil!*")
+                    await send_telegram_document(
+                        output_file,
+                        f"📊 *Resultados de Servidores Encontrados — {convenio.upper()}*\n"
+                        f"- Total processado: {len(pendentes)} registros"
+                    )
+                else:
+                    print("\nNenhum registro novo foi salvo nesta rodada.")
+                    await send_telegram_message("ℹ️ *Processamento Finalizado:* Nenhum novo registro foi extraído.")
             else:
                 print(f"\nParcial salvo em: {temp_csv}")
                 await send_telegram_message(
