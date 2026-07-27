@@ -22,16 +22,17 @@ TELEGRAM_API_TIMEOUT = 35
 
 
 PREFEITURAS = (
+    ("Consiglog", (("itabuna", "Itabuna"),)),
+    ("SafeConsig", (("fortaleza", "Fortaleza"), ("maranguape", "Maranguape"))),
+    ("EasyConsig", (("tamboril", "Tamboril"), ("chapeco", "Chapecó"))),
     ("RF1", (("boa-vista", "Boa Vista"), ("pref2", "pref2"))),
-    ("EasyConsig", (("chapeco", "Chapecó"),)),
-    ("SafeConsig", (("fortaleza", "Fortaleza"), ("tamboril", "Tamboril"))),
     (
         "FácilConsig",
         (
-            ("teresina", "Teresina"),
-            ("gov-am", "GOV AM"),
             ("paulista", "Paulista"),
             ("paulista-previdencia", "Paulista Previdência"),
+            ("teresina", "Teresina"),
+            ("gov-am", "GOV AM"),
             ("mossoro", "Mossoró"),
         ),
     ),

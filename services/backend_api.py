@@ -27,15 +27,17 @@ from services.scheduling import (
 
 
 PREFEITURAS = {
+    "itabuna": "Itabuna (Consiglog)",
+    "fortaleza": "Fortaleza",
+    "maranguape": "Maranguape",
+    "tamboril": "Tamboril",
+    "paulista": "Paulista",
+    "paulista-previdencia": "Paulista Previdência",
     "boa-vista": "Boa Vista",
     "pref2": "pref2",
     "chapeco": "Chapecó",
-    "fortaleza": "Fortaleza",
-    "tamboril": "Tamboril",
     "teresina": "Teresina",
     "gov-am": "GOV AM",
-    "paulista": "Paulista",
-    "paulista-previdencia": "Paulista Previdência",
     "mossoro": "Mossoró",
 }
 

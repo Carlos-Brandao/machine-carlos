@@ -11,20 +11,21 @@ START_HOUR = 7
 
 PREFEITURAS_POR_PLATAFORMA = {
     "rf1": {"boa-vista", "pref2"},
-    "easyconsig": {"chapeco"},
-    "safeconsig": {"fortaleza", "tamboril"},
+    "easyconsig": {"chapeco", "tamboril"},
+    "safeconsig": {"fortaleza", "maranguape"},
     "facil": {"teresina", "gov-am", "paulista", "paulista-previdencia", "mossoro"},
+    "consiglog": {"itabuna"},
 }
 
-# A hora final é exclusiva: SafeConsig pode trabalhar até 17:59; as demais,
-# até 20:59. Todos só iniciam em dias úteis, a partir das 07:00.
+# A hora final é exclusiva: 24h para permitir execuções em qualquer horário
 END_HOUR_BY_PLATFORM = {
-    "safeconsig": 18,
-    "facil": 21,
-    "rf1": 21,
-    "fenix": 21,
-    "grid": 21,
-    "easyconsig": 21,
+    "safeconsig": 24,
+    "facil": 24,
+    "rf1": 24,
+    "fenix": 24,
+    "grid": 24,
+    "easyconsig": 24,
+    "consiglog": 24,
 }
 
 

@@ -139,4 +139,13 @@ class JobScheduler:
     def _command_for(prefeitura: str) -> list[str] | None:
         key = "ROBOT_COMMAND_" + prefeitura.upper().replace("-", "_")
         raw_command = os.getenv(key, "").strip()
-        return shlex.split(raw_command) if raw_command else None
+        if raw_command:
+            return shlex.split(raw_command)
+
+        try:
+            import sys
+            from services.scheduling import platform_for
+            platform = platform_for(prefeitura)
+            return [sys.executable, "main.py", platform, prefeitura, "--yes"]
+        except Exception:
+            return None
