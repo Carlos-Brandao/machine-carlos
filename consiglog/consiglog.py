@@ -209,8 +209,8 @@ def extrair_dados_margem(page: Page) -> dict:
 # --- MAIN BOT RUNNER ---
 
 def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop: threading.Event) -> None:
-    login_url = config.get("url_login", "https://saec.consiglog.com.br/Login.aspx")
-    consulta_url = config.get("url_consulta", "https://saec.consiglog.com.br/Margem/ConsultaMargemDados.aspx")
+    login_url = config.get("url_login", os.getenv("CONSIGLOG_URL_LOGIN", "https://saec.consigx.com.br/Login.aspx"))
+    consulta_url = config.get("url_consulta", os.getenv("CONSIGLOG_URL_CONSULTA", "https://saec.consigx.com.br/Margem/ConsultaMargemDados.aspx"))
     usuario = config["usuario"]
     senha = config["senha"]
     convenio = config.get("convenio", "itabuna").lower()
