@@ -362,14 +362,12 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                             except Exception:
                                 pass
                         
-                        if cpf_loc.count() == 0 or not cpf_loc.first.is_visible():
-                            print(f"[INFO] Recarregando URL de consulta: {consulta_url}")
-                            page.goto(consulta_url, timeout=20000)
-                            page.wait_for_load_state("domcontentloaded")
-
-                    # 2. Preenche e pesquisa o CPF
-                    cpf_selector = 'input[name*="cpfTextBox"], input[id*="cpfTextBox"]'
-                    btn_selector = 'input[name*="pesquisarButton"], input[id*="pesquisarButton"]'
+                    # Se caiu na tela de login por expiração de sessão, faz login novamente
+                    if "Login" in page.url or page.locator('input#txtLogin').count() > 0:
+                        print("[INFO] Sessão expirada detectada. Efetuando re-login no portal...")
+                        login_consiglog(page, login_url, usuario, senha)
+                        page.goto(consulta_url, timeout=20000)
+                        page.wait_for_load_state("domcontentloaded")
 
                     page.wait_for_selector(cpf_selector, state='visible', timeout=15000)
                     page.fill(cpf_selector, "")
