@@ -30,7 +30,10 @@ LOGIN_SECOND_STEP = "LoginSegundaEtapa.aspx"
 LOGIN_SELECTION = "LoginSelecao.aspx"
 
 CPF_FIELD = "#body_cpfTextBox"
-SEARCH_BUTTON = "#body_pesquisarButton"
+SEARCH_BUTTON = (
+    "#body_pesquisarButton, input[id*='pesquisarButton'], "
+    "input[id*='btnConsultar'], input[name*='btnConsultar']"
+)
 CANCEL_BUTTON = "#body_cancelarButton"
 SERVICE_SELECT = "#body_servicoDropDownList"
 NOT_FOUND_TEXT = "CPF/Matrícula não encontrado."
