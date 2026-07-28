@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from inspect import signature
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -193,6 +194,8 @@ class AdminCoreTests(unittest.TestCase):
             self.assertIn("/admin/credentials", paths)
             self.assertIn("/admin/datasets", paths)
             self.assertIn("/api/workers/items/claim", paths)
+            upload_route = next(route for route in app.routes if route.path == "/admin/datasets" and "POST" in route.methods)
+            self.assertIn("custom_columns", signature(upload_route.endpoint).parameters)
             self.assertEqual(14, len(Base.metadata.tables))
 
             response = TestClient(app).get("/login")

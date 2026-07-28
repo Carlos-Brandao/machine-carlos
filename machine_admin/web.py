@@ -428,7 +428,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def add_credential(
         request: Request,
         municipality_slug: str = Form(...),
-        custom_columns: str = Form(""),
         label: str = Form(...),
         username: str = Form(...),
         password: str = Form(...),
@@ -577,6 +576,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def upload_dataset(
         request: Request,
         municipality_slug: str = Form(...),
+        custom_columns: str = Form(""),
         start_job: bool = Form(False),
         waiting_job_id: int | None = Form(None),
         csrf: str = Form(...),
