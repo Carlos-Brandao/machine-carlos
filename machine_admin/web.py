@@ -632,7 +632,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
             )
             session.commit()
-            request.session["flash"] = f"Base importada com {dataset.row_count} registros."
+            request.session["flash"] = (
+                f"Base importada com {dataset.row_count} registros. "
+                f"{dataset.error_message or ''}"
+            ).strip()
         except ValueError as exc:
             storage_path = dataset.storage_path if dataset else None
             session.rollback()

@@ -138,6 +138,19 @@ class AdminCoreTests(unittest.TestCase):
                 )
             self.assertEqual(1, len(list(storage.rglob("*.enc"))))
 
+    def test_dataset_import_keeps_valid_rows_when_some_cpfs_are_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = import_dataset(
+                FakeImportSession(),
+                settings_for(Path(directory)),
+                municipality_slug="boa-vista",
+                filename="mixed.csv",
+                payload=b"CPF\n01234567890\ninvalido\n",
+                uploaded_by_id=1,
+            )
+            self.assertEqual(1, dataset.row_count)
+            self.assertIn("linha(s) ignorada(s)", dataset.error_message or "")
+
     def test_custom_columns_are_normalized_and_persisted_in_records(self) -> None:
         self.assertEqual(
             ["Banco", "Consultor"],

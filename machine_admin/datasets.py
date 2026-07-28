@@ -129,17 +129,17 @@ def import_dataset(
                     source_data={"columns": list(raw_row)},
                 )
             )
-        if errors:
-            raise ValueError(
-                f"{len(errors)} linha(s) com CPF inválido; primeiras linhas: "
-                + ", ".join(map(str, errors[:10]))
-            )
         if not records:
             raise ValueError("A base não possui registros válidos.")
 
         session.add_all(records)
         dataset.row_count = len(records)
         dataset.status = "ready"
+        if errors:
+            dataset.error_message = (
+                f"{len(errors)} linha(s) ignorada(s) por CPF inválido; primeiras linhas: "
+                + ", ".join(map(str, errors[:10]))
+            )
         session.flush()
         return dataset
     except Exception:
