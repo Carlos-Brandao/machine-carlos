@@ -28,12 +28,12 @@ class MunicipalityDefinition:
 
 PLATFORMS: dict[str, PlatformDefinition] = {
     "rf1": PlatformDefinition("rf1", "RF1", "rf1"),
-    "facil": PlatformDefinition("facil", "FácilConsig", "facil"),
+    "facil": PlatformDefinition("facil", "FACILCONSIG", "facil"),
     "safeconsig": PlatformDefinition(
-        "safeconsig", "SafeConsig", "safeconsig", end_hour=18
+        "safeconsig", "SAFE", "safeconsig", end_hour=18
     ),
     "grid": PlatformDefinition("grid", "Grid", "grid"),
-    "consiglog": PlatformDefinition("consiglog", "Consiglog", "consiglog"),
+    "consiglog": PlatformDefinition("consiglog", "CONSIGX", "consiglog"),
     # O controlador antigo anunciava EasyConsig, mas não há runner no projeto.
     "easyconsig": PlatformDefinition(
         "easyconsig", "EasyConsig", "easyconsig", enabled=False

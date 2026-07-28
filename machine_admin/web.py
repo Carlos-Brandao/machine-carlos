@@ -421,6 +421,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user,
                 credentials=credentials,
                 municipalities=municipalities,
+                municipality_map={item.slug: item for item in municipalities},
             ),
         )
 
@@ -431,7 +432,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         label: str = Form(...),
         username: str = Form(...),
         password: str = Form(...),
-        consignataria: str = Form(""),
+        consignataria: str = Form(...),
         csrf: str = Form(...),
         session: Session = Depends(get_db),
     ):
@@ -907,7 +908,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "password": password,
                 "login_url": municipality.login_url if municipality else None,
                 "query_url": municipality.query_url if municipality else None,
-                "settings": credential.settings_json,
+                "settings": {
+                    **credential.settings_json,
+                    "consignataria": credential.consignataria,
+                },
             },
             headers={"Cache-Control": "no-store"},
         )

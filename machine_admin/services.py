@@ -145,14 +145,15 @@ def create_portal_credential(
     label: str,
     username: str,
     password: str,
-    consignataria: str | None = None,
+    consignataria: str,
 ) -> PortalCredential:
     municipality = session.get(Municipality, municipality_slug)
     if not municipality:
         raise ValueError("Convênio não encontrado.")
     label = label.strip()
-    if not label or not username.strip() or not password:
-        raise ValueError("Rótulo, usuário e senha são obrigatórios.")
+    consignataria = consignataria.strip()
+    if not label or not username.strip() or not password or not consignataria:
+        raise ValueError("Rótulo, usuário, senha e consignatária são obrigatórios.")
     context_id = secrets.token_hex(16)
     cipher = SecretCipher(settings.master_key)
     credential = PortalCredential(
@@ -165,13 +166,10 @@ def create_portal_credential(
         password_ciphertext=cipher.encrypt(
             password, context=f"portal:{context_id}:password"
         ),
+        consignataria=consignataria,
         status="active",
         max_parallel_sessions=1,
-        settings_json=(
-            {"consignataria": consignataria.strip()}
-            if consignataria and consignataria.strip()
-            else {}
-        ),
+        settings_json={"consignataria": consignataria},
     )
     session.add(credential)
     session.flush()

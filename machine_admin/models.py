@@ -117,6 +117,7 @@ class PortalCredential(TimestampMixin, Base):
     encryption_context: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     username_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     password_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    consignataria: Mapped[str] = mapped_column(String(160), nullable=False)
     key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     max_parallel_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
