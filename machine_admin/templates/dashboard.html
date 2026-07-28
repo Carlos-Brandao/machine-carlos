@@ -8,6 +8,19 @@
   <article><span>Bases</span><strong>{{ counts.datasets }}</strong></article>
 </section>
 <section class="card">
+  <div class="section-title"><h2>Robôs e convênios</h2><a href="/admin/credentials">Gerenciar credenciais</a></div>
+  <div class="table-wrap"><table><thead><tr><th>Convênio</th><th>Plataforma</th><th>Estado</th><th>Credenciais ativas</th><th>Capacidade</th><th>Jobs ativos</th></tr></thead><tbody>
+  {% for item in robots %}<tr>
+    <td>{{ item.municipality.name }}</td>
+    <td>{{ item.platform.name if item.platform else item.municipality.platform_slug }}</td>
+    <td><span class="status {{ 'active' if item.municipality.enabled and item.platform and item.platform.enabled else 'disabled' }}">{{ 'ativo' if item.municipality.enabled and item.platform and item.platform.enabled else 'pendente' }}</span></td>
+    <td>{{ item.credentials }}</td>
+    <td>{{ item.municipality.max_workers }}</td>
+    <td>{{ item.active_jobs }}</td>
+  </tr>{% else %}<tr><td colspan="6" class="empty">Nenhum robô catalogado.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="card">
   <div class="section-title"><h2>Jobs recentes</h2><a href="/admin/jobs">Ver todos</a></div>
   <div class="table-wrap"><table><thead><tr><th>ID</th><th>Convênio</th><th>Status</th><th>Progresso</th><th>Criado</th></tr></thead><tbody>
   {% for job in jobs %}<tr><td>#{{ job.id }}</td><td>{{ job.municipality_slug }}</td><td><span class="status {{ job.status }}">{{ job.status }}</span></td><td>{{ job.completed_items }}/{{ job.total_items }}</td><td>{{ job.created_at.strftime('%d/%m %H:%M') if job.created_at else '-' }}</td></tr>

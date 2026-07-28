@@ -271,3 +271,38 @@ def dashboard_counts(session: Session) -> dict[str, int]:
             )
         ) or 0,
     }
+
+
+def dashboard_robot_overview(session: Session) -> list[dict[str, object]]:
+    """Resumo por convênio para a visão operacional do painel."""
+    from machine_admin.models import Job
+
+    municipalities = list(
+        session.scalars(
+            select(Municipality).order_by(Municipality.platform_slug, Municipality.name)
+        )
+    )
+    credentials_by_municipality = dict(
+        session.execute(
+            select(PortalCredential.municipality_slug, func.count(PortalCredential.id))
+            .where(PortalCredential.status == "active")
+            .group_by(PortalCredential.municipality_slug)
+        ).all()
+    )
+    active_statuses = ("awaiting_dataset", "queued", "running")
+    active_jobs_by_municipality = dict(
+        session.execute(
+            select(Job.municipality_slug, func.count(Job.id))
+            .where(Job.status.in_(active_statuses))
+            .group_by(Job.municipality_slug)
+        ).all()
+    )
+    return [
+        {
+            "municipality": municipality,
+            "platform": session.get(Platform, municipality.platform_slug),
+            "credentials": credentials_by_municipality.get(municipality.slug, 0),
+            "active_jobs": active_jobs_by_municipality.get(municipality.slug, 0),
+        }
+        for municipality in municipalities
+    ]

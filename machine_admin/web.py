@@ -69,6 +69,7 @@ from machine_admin.services import (
     create_admin_user,
     create_portal_credential,
     dashboard_counts,
+    dashboard_robot_overview,
     decrypt_portal_credential,
     issue_api_token,
     sync_catalog,
@@ -257,7 +258,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return TEMPLATES.TemplateResponse(
             request=request,
             name="dashboard.html",
-            context=page_context(request, user, counts=dashboard_counts(session), jobs=jobs),
+            context=page_context(
+                request,
+                user,
+                counts=dashboard_counts(session),
+                jobs=jobs,
+                robots=dashboard_robot_overview(session),
+            ),
         )
 
     @app.get("/admin/users", response_class=HTMLResponse)
