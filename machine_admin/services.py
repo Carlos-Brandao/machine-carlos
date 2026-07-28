@@ -176,6 +176,36 @@ def create_portal_credential(
     return credential
 
 
+def update_portal_credential(
+    session: Session,
+    settings: Settings,
+    *,
+    credential: PortalCredential,
+    label: str,
+    username: str,
+    password: str,
+    consignataria: str,
+) -> PortalCredential:
+    label, consignataria = label.strip(), consignataria.strip()
+    if not label or not consignataria:
+        raise ValueError("Identificação e consignatária são obrigatórias.")
+    credential.label = label
+    credential.consignataria = consignataria
+    credential.settings_json = {**credential.settings_json, "consignataria": consignataria}
+    cipher = SecretCipher(settings.master_key)
+    context_id = credential.encryption_context
+    if username.strip():
+        credential.username_ciphertext = cipher.encrypt(
+            username.strip(), context=f"portal:{context_id}:username"
+        )
+    if password:
+        credential.password_ciphertext = cipher.encrypt(
+            password, context=f"portal:{context_id}:password"
+        )
+    session.flush()
+    return credential
+
+
 def decrypt_portal_credential(
     credential: PortalCredential, settings: Settings
 ) -> tuple[str, str]:

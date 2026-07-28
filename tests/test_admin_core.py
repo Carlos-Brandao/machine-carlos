@@ -192,7 +192,9 @@ class AdminCoreTests(unittest.TestCase):
             app.dependency_overrides[get_db] = fake_db
             paths = {route.path for route in app.routes}
             self.assertIn("/admin/credentials", paths)
+            self.assertIn("/admin/credentials/{credential_id}/edit", paths)
             self.assertIn("/admin/datasets", paths)
+            self.assertIn("/admin/logs", paths)
             self.assertIn("/api/workers/items/claim", paths)
             upload_route = next(route for route in app.routes if route.path == "/admin/datasets" and "POST" in route.methods)
             self.assertIn("custom_columns", signature(upload_route.endpoint).parameters)

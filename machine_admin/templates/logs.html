@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title"><div><p class="eyebrow">Operação</p><h1>Logs de consulta</h1></div></div>
+<section class="card"><p class="muted">Últimos 300 eventos. Nenhum CPF é exibido nesta tela.</p><div class="table-wrap"><table><thead><tr><th>Data</th><th>Job</th><th>Convênio</th><th>Evento</th><th>Mensagem</th></tr></thead><tbody>{% for event in events %}{% set job = jobs.get(event.job_id) %}<tr><td>{{ event.created_at.strftime('%d/%m/%Y %H:%M:%S') }}</td><td>#{{ event.job_id }}</td><td>{{ job.municipality_slug if job else '-' }}</td><td>{{ event.event_type }}</td><td>{{ event.message or '-' }}</td></tr>{% else %}<tr><td colspan="5" class="empty">Ainda não há eventos.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

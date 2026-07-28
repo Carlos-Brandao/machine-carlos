@@ -40,6 +40,7 @@ from machine_admin.models import (
     DatasetRecord,
     IntegrationSecret,
     Job,
+    JobEvent,
     JobItem,
     Municipality,
     PortalCredential,
@@ -73,6 +74,7 @@ from machine_admin.services import (
     decrypt_portal_credential,
     issue_api_token,
     sync_catalog,
+    update_portal_credential,
     upsert_integration_secret,
 )
 from services.registry import enabled_municipalities
@@ -425,6 +427,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
         )
 
+    @app.get("/admin/credentials/{credential_id}/edit", response_class=HTMLResponse)
+    def edit_credential_page(credential_id: int, request: Request, session: Session = Depends(get_db)):
+        user = require_browser_user(request, session, admin_only=True)
+        if isinstance(user, RedirectResponse):
+            return user
+        credential = session.get(PortalCredential, credential_id)
+        if not credential:
+            raise HTTPException(status_code=404, detail="Credencial não encontrada.")
+        return TEMPLATES.TemplateResponse(request=request, name="credential_edit.html", context=page_context(request, user, credential=credential, municipality=session.get(Municipality, credential.municipality_slug)))
+
+    @app.post("/admin/credentials/{credential_id}/edit")
+    def edit_credential(credential_id: int, request: Request, label: str = Form(...), username: str = Form(""), password: str = Form(""), consignataria: str = Form(...), csrf: str = Form(...), session: Session = Depends(get_db)):
+        user = require_browser_user(request, session, admin_only=True)
+        if isinstance(user, RedirectResponse):
+            return user
+        validate_csrf(request, csrf)
+        credential = session.get(PortalCredential, credential_id)
+        if not credential:
+            raise HTTPException(status_code=404, detail="Credencial não encontrada.")
+        try:
+            update_portal_credential(session, settings, credential=credential, label=label, username=username, password=password, consignataria=consignataria)
+            audit(session, actor_id=user.id, action="portal_credential.updated", target_type="portal_credential", target_id=str(credential.id), ip_address=client_ip(request))
+            session.commit()
+            request.session["flash"] = "Credencial atualizada."
+        except ValueError as exc:
+            session.rollback()
+            request.session["flash"] = str(exc)
+        return RedirectResponse("/admin/credentials", status_code=303)
+
     @app.post("/admin/credentials")
     def add_credential(
         request: Request,
@@ -645,6 +676,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             name="jobs.html",
             context=page_context(request, user, jobs=jobs),
         )
+
+    @app.get("/admin/logs", response_class=HTMLResponse)
+    def logs_page(request: Request, session: Session = Depends(get_db)):
+        user = require_browser_user(request, session)
+        if isinstance(user, RedirectResponse):
+            return user
+        events = list(session.scalars(select(JobEvent).order_by(JobEvent.created_at.desc()).limit(300)))
+        jobs = {job.id: job for job in session.scalars(select(Job).where(Job.id.in_([event.job_id for event in events])))}
+        return TEMPLATES.TemplateResponse(request=request, name="logs.html", context=page_context(request, user, events=events, jobs=jobs))
 
     @app.get("/admin/jobs/{job_id}/export.xlsx")
     def export_job(

@@ -211,6 +211,19 @@ def complete_job_item(
     result.status = status
     result.result_ciphertext = result_ciphertext
     session.add(result)
+    session.add(
+        JobEvent(
+            job_id=item.job_id,
+            event_type="consulta.erro" if status == "failed" else "consulta.concluida",
+            message=(error_message or "Consulta concluída.")[:500],
+            event_data={
+                "item_id": item.id,
+                "credential_id": item.credential_id,
+                "status": status,
+                "error_code": error_code,
+            },
+        )
+    )
     refresh_job_counters(session, item.job_id)
     session.flush()
     return item
