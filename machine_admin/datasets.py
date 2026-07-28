@@ -28,14 +28,14 @@ def _read_table(filename: str, payload: bytes) -> pd.DataFrame:
     raise ValueError("Formato não aceito. Envie XLSX ou CSV.")
 
 
-def _cpf_column(columns: list[str]) -> str:
-    exact = next((column for column in columns if column.strip().upper() == "CPF"), None)
-    if exact:
-        return exact
-    contains = next((column for column in columns if "CPF" in column.strip().upper()), None)
-    if not contains:
-        raise ValueError("A base precisa possuir uma coluna de CPF.")
-    return contains
+def _validate_required_columns(columns: list[str]) -> tuple[str, str | None]:
+    """Exige CPF como primeira coluna; matrícula é opcional na segunda."""
+    if not columns or columns[0].upper() != "CPF":
+        raise ValueError("Formato inválido: a primeira coluna deve ser CPF.")
+    registration_column = (
+        columns[1] if len(columns) > 1 and columns[1].upper() == "MATRICULA" else None
+    )
+    return columns[0], registration_column
 
 
 def normalise_custom_columns(value: str | list[str] | None) -> list[str]:
@@ -63,10 +63,7 @@ def import_dataset(
         raise ValueError("Arquivo vazio ou acima do limite permitido.")
     dataframe = _read_table(filename, payload)
     dataframe.columns = [str(column).strip() for column in dataframe.columns]
-    cpf_column = _cpf_column(list(dataframe.columns))
-    registration_column = next(
-        (column for column in dataframe.columns if "MATRIC" in column.upper()), None
-    )
+    cpf_column, registration_column = _validate_required_columns(list(dataframe.columns))
     extra_columns = normalise_custom_columns(custom_columns)
     digest = hashlib.sha256(payload).hexdigest()
     dataset = Dataset(
@@ -121,8 +118,7 @@ def import_dataset(
                     cpf_last4=digits[-4:],
                     registration=(
                         str(row.get(registration_column)).strip()
-                        if registration_column
-                        and not pd.isna(row.get(registration_column))
+                        if registration_column and not pd.isna(row.get(registration_column))
                         else None
                     ),
                     source_ciphertext=cipher.encrypt(

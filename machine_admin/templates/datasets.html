@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-title"><div><p class="eyebrow">Entrada</p><h1>Bases de consulta</h1></div></div>
-<section class="card"><h2>Importar base cifrada</h2><form method="post" enctype="multipart/form-data" class="form-grid">
+<section class="card"><h2>Importar base cifrada</h2><p class="muted">Formato obrigatório: primeira coluna <strong>CPF</strong>. A segunda coluna pode ser <strong>MATRICULA</strong>; os demais campos são opcionais.</p><form method="post" enctype="multipart/form-data" class="form-grid">
   <input type="hidden" name="csrf" value="{{ csrf_token }}">
   <label>Convênio<select name="municipality_slug" required>{% for item in municipalities %}<option value="{{ item.slug }}">{{ item.name }}</option>{% endfor %}</select></label>
   <label>Arquivo<input type="file" name="file" accept=".xlsx,.csv" required></label>

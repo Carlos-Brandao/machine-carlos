@@ -149,13 +149,37 @@ class AdminCoreTests(unittest.TestCase):
                 settings_for(Path(directory)),
                 municipality_slug="itabuna",
                 filename="base.csv",
-                payload=b"CPF\n01234567890\n",
+                payload=b"CPF,MATRICULA\n01234567890,ABC\n",
                 uploaded_by_id=1,
                 custom_columns="Banco, Consultor",
             )
             self.assertEqual(["Banco", "Consultor"], dataset.custom_columns)
             record = next(value for value in session.records if isinstance(value, DatasetRecord))
-            self.assertEqual(["CPF", "Banco", "Consultor"], record.source_data["columns"])
+            self.assertEqual(
+                ["CPF", "MATRICULA", "Banco", "Consultor"],
+                record.source_data["columns"],
+            )
+
+    def test_dataset_requires_cpf_as_first_column_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = import_dataset(
+                FakeImportSession(),
+                settings_for(Path(directory)),
+                municipality_slug="itabuna",
+                filename="base.csv",
+                payload=b"CPF,BANCO\n01234567890,Exemplo\n",
+                uploaded_by_id=1,
+            )
+            self.assertEqual(1, dataset.row_count)
+            with self.assertRaisesRegex(ValueError, "primeira coluna"):
+                import_dataset(
+                    FakeImportSession(),
+                    settings_for(Path(directory)),
+                    municipality_slug="itabuna",
+                    filename="base.csv",
+                    payload=b"MATRICULA,CPF\nABC,01234567890\n",
+                    uploaded_by_id=1,
+                )
 
     def test_app_registers_admin_and_worker_routes_and_renders_login(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
