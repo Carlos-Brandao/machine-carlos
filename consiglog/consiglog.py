@@ -440,6 +440,21 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                     except Exception as e:
                         print(f'[ERRO] Falha ao salvar progresso incremental: {e}')
 
+                # Envia planilha parcial no Telegram a cada 50 CPFs
+                if (idx_cpf + 1) % 50 == 0:
+                    try:
+                        qtd_proc = len(df[df['Status_Robo'].notna()])
+                        qtd_sucesso = len(df[df['Status_Robo'] == 'Sucesso'])
+                        caption = (
+                            f"📊 *Progresso Parcial Consiglog ({convenio.upper()})*\n"
+                            f"- Consultados: {qtd_proc} / {len(df)} ({(qtd_proc/len(df))*100:.1f}%)\n"
+                            f"- Com Sucesso: {qtd_sucesso}"
+                        )
+                        send_telegram_document(temp_file, caption=caption)
+                        print('[INFO] Planilha parcial enviada no Telegram.')
+                    except Exception as e:
+                        print(f'[ERRO] Falha ao enviar parcial no Telegram: {e}')
+
             else:
                 print('[INFO] Execução de todo o lote concluída com sucesso!')
                 df.to_excel(output_file, index=False)
