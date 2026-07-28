@@ -91,6 +91,9 @@ def run_bot(bot: str, config: dict, input_file: Path, temp_file: Path, output_fi
     elif bot == "safeconsig":
         from safeconsig.safeconsig import main
         main(config=config, input_file=input_file, temp_file=temp_file, output_file=output_file)
+    elif bot == "consiglog":
+        from consiglog.consiglog import main
+        main(config=config, input_file=input_file, temp_file=temp_file, output_file=output_file)
 
 
 def main():

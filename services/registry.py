@@ -33,10 +33,7 @@ PLATFORMS: dict[str, PlatformDefinition] = {
         "safeconsig", "SafeConsig", "safeconsig", end_hour=18
     ),
     "grid": PlatformDefinition("grid", "Grid", "grid"),
-    # Ativado quando o código da branch FÁCIL for integrado e revalidado.
-    "consiglog": PlatformDefinition(
-        "consiglog", "Consiglog", "consiglog", enabled=False
-    ),
+    "consiglog": PlatformDefinition("consiglog", "Consiglog", "consiglog"),
     # O controlador antigo anunciava EasyConsig, mas não há runner no projeto.
     "easyconsig": PlatformDefinition(
         "easyconsig", "EasyConsig", "easyconsig", enabled=False
@@ -69,7 +66,11 @@ MUNICIPALITIES: dict[str, MunicipalityDefinition] = {
     ),
     "mossoro": MunicipalityDefinition("mossoro", "Mossoró", "facil"),
     "itabuna": MunicipalityDefinition(
-        "itabuna", "Itabuna", "consiglog", enabled=False
+        "itabuna",
+        "Itabuna",
+        "consiglog",
+        login_url="https://saec.consigx.com.br/Login.aspx",
+        query_url="https://saec.consigx.com.br/Margem/ConsultaMargem.aspx",
     ),
     "chapeco": MunicipalityDefinition(
         "chapeco", "Chapecó", "easyconsig", enabled=False

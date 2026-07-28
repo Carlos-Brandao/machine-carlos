@@ -13,12 +13,11 @@
 - Um único adaptador e um único token operacional do Telegram.
 - Fênix removido; backend SQLite e scheduler legado removidos.
 - Deploy sem encerramento automático de processos e unidades systemd atualizadas.
-- Itabuna identificado corretamente como Consiglog separado e desativado.
+- Itabuna identificado corretamente como ConsigX/Consiglog separado.
 
 ## Bloqueios para homologação em produção
 
-- Disponibilizar a configuração da VPS por variáveis `MACHINE_SSH_*`.
-- Criar ou confirmar um banco PostgreSQL limpo e aplicar `alembic upgrade head`.
+- Criar um PostgreSQL limpo na VPS e aplicar `alembic upgrade head`.
 - Configurar `APP_MASTER_KEY`, segredo de sessão, domínio e proxy HTTPS.
 - Criar os tokens internos do Telegram e dos workers com escopos mínimos.
 - Cadastrar de um a três logins válidos de Boa Vista no painel.
@@ -34,7 +33,8 @@
 - Política de retenção e expurgo auditável de bases e resultados.
 - Rotação versionada da chave mestre.
 - Adaptar SafeConsig, FácilConsig e Grid ao contrato transacional de workers.
-- Revalidar o novo site ConsigX/Consiglog antes de ativar Itabuna.
+- Homologar uma consulta de Itabuna que retorne dados, para confirmar todos os
+  campos de margem antes de iniciar lote de produção.
 - Decidir a remoção dos três arquivos históricos de dados ainda versionados.
 
 ## Decisões mantidas

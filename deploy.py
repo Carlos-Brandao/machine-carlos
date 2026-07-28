@@ -17,7 +17,6 @@ from services.remote import (
 
 ROOT = Path(__file__).parent
 ROOT_FILES = (
-    ".env",
     "alembic.ini",
     "main.py",
     "requirements.txt",
@@ -29,6 +28,7 @@ ROOT_FILES = (
 )
 SOURCE_DIRS = (
     "deploy",
+    "consiglog",
     "facil",
     "grid",
     "machine_admin",
