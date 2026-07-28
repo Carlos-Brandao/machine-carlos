@@ -370,7 +370,7 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                         page.wait_for_load_state("domcontentloaded")
 
                     cpf_selector = 'input#body_cpfTextBox, input[name*="cpfTextBox"]'
-                    btn_selector = 'input[id*="btnConsultar"], input[name*="btnConsultar"]'
+                    btn_selector = 'input#body_pesquisarButton, input[id*="pesquisarButton"], input[id*="btnConsultar"], input[name*="btnConsultar"]'
                     page.wait_for_selector(cpf_selector, state='visible', timeout=15000)
                     page.fill(cpf_selector, "")
                     page.fill(cpf_selector, cpf_padded)
