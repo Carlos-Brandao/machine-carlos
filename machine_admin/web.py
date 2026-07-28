@@ -68,6 +68,7 @@ from machine_admin.services import (
     dashboard_robot_overview,
     decrypt_portal_credential,
     issue_api_token,
+    migrate_portal_credentials_to_plaintext,
     sync_catalog,
     update_portal_credential,
     upsert_integration_secret,
@@ -93,6 +94,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         with get_session_factory()() as session:
             sync_catalog(session)
+            migrate_portal_credentials_to_plaintext(session, settings)
+            session.commit()
             bootstrap_admin(session, settings)
         yield
 
@@ -430,7 +433,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         credential = session.get(PortalCredential, credential_id)
         if not credential:
             raise HTTPException(status_code=404, detail="Credencial não encontrada.")
-        return TEMPLATES.TemplateResponse(request=request, name="credential_edit.html", context=page_context(request, user, credential=credential, municipality=session.get(Municipality, credential.municipality_slug)))
+        username, password = decrypt_portal_credential(credential, settings)
+        return TEMPLATES.TemplateResponse(request=request, name="credential_edit.html", context=page_context(request, user, credential=credential, municipality=session.get(Municipality, credential.municipality_slug), username=username, password=password))
 
     @app.post("/admin/credentials/{credential_id}/edit")
     def edit_credential(credential_id: int, request: Request, label: str = Form(...), username: str = Form(""), password: str = Form(""), consignataria: str = Form(...), csrf: str = Form(...), session: Session = Depends(get_db)):
@@ -485,7 +489,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ip_address=client_ip(request),
             )
             session.commit()
-            request.session["flash"] = "Credencial armazenada de forma cifrada."
+            request.session["flash"] = "Credencial armazenada."
         except ValueError as exc:
             session.rollback()
             request.session["flash"] = str(exc)

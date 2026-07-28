@@ -166,6 +166,8 @@ def create_portal_credential(
         password_ciphertext=cipher.encrypt(
             password, context=f"portal:{context_id}:password"
         ),
+        portal_username=username.strip(),
+        portal_password=password,
         consignataria=consignataria,
         status="active",
         max_parallel_sessions=1,
@@ -195,10 +197,12 @@ def update_portal_credential(
     cipher = SecretCipher(settings.master_key)
     context_id = credential.encryption_context
     if username.strip():
+        credential.portal_username = username.strip()
         credential.username_ciphertext = cipher.encrypt(
             username.strip(), context=f"portal:{context_id}:username"
         )
     if password:
+        credential.portal_password = password
         credential.password_ciphertext = cipher.encrypt(
             password, context=f"portal:{context_id}:password"
         )
@@ -209,6 +213,8 @@ def update_portal_credential(
 def decrypt_portal_credential(
     credential: PortalCredential, settings: Settings
 ) -> tuple[str, str]:
+    if credential.portal_username is not None and credential.portal_password is not None:
+        return credential.portal_username, credential.portal_password
     cipher = SecretCipher(settings.master_key)
     context_id = credential.encryption_context
     return (
@@ -221,6 +227,19 @@ def decrypt_portal_credential(
             context=f"portal:{context_id}:password",
         ),
     )
+
+
+def migrate_portal_credentials_to_plaintext(session: Session, settings: Settings) -> None:
+    """Preenche o armazenamento aberto para credenciais legadas cifradas."""
+    for credential in session.scalars(
+        select(PortalCredential).where(
+            (PortalCredential.portal_username.is_(None))
+            | (PortalCredential.portal_password.is_(None))
+        )
+    ):
+        username, password = decrypt_portal_credential(credential, settings)
+        credential.portal_username = username
+        credential.portal_password = password
 
 
 def upsert_integration_secret(
