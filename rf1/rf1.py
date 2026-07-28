@@ -127,7 +127,20 @@ def _consultar(page: Page, cpf: str) -> dict:
     campo = f"{_PFXO}txtCPF"
     page.fill(campo, normalized_cpf)
     page.click(f"{_PFXO}btnListar")
-    page.wait_for_timeout(800)
+
+    # O postback do WebForms é assíncrono. Um tempo fixo aqui permitia que a
+    # leitura capturasse os dados visíveis da consulta anterior, duplicando
+    # CPFs no resultado. Só seguimos quando o CPF devolvido é o CPF solicitado.
+    returned_cpf_selector = f"{_PFXO}lblCPF"
+    page.wait_for_function(
+        """([selector, expected]) => {
+            const element = document.querySelector(selector);
+            const returned = (element?.textContent || '').replace(/\\D/g, '');
+            return returned === expected;
+        }""",
+        arg=[returned_cpf_selector, normalized_cpf],
+        timeout=15_000,
+    )
 
     sel_nome = f"{_PFXO}lblNome"
     nome = page.locator(sel_nome)
