@@ -11,7 +11,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from rf1.rf1 import DEFAULT_LOGIN_URL, DEFAULT_QUERY_URL, LOGIN_PATH, _consultar, _login
+from rf1.rf1 import DEFAULT_LOGIN_URL, DEFAULT_QUERY_URL, LOGIN_PATH, RF1Error, _consultar, _login
 from services.scheduling import is_within_window
 from services.utils import mask_cpf
 from workers.api_client import WorkerAPIClient, WorkerAPIConflict, WorkerAPIError
@@ -39,7 +39,7 @@ class RF1Worker:
         while not self.stop_event.is_set():
             try:
                 worked = self.run_once()
-            except (WorkerAPIError, OSError, PlaywrightError) as exc:
+            except (WorkerAPIError, OSError, PlaywrightError, RF1Error) as exc:
                 LOG.warning("Worker %s aguardando API: %s", self.worker_id, exc)
                 worked = False
             if not worked:

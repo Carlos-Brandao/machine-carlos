@@ -54,7 +54,15 @@ def _select_consignataria(page: Page, configured_value: str | None) -> None:
             )
         return
     if configured_value:
-        select.select_option(str(configured_value))
+        if str(configured_value) in nonempty_values:
+            select.select_option(str(configured_value))
+        elif len(nonempty_values) == 1:
+            select.select_option(nonempty_values[0])
+        else:
+            raise RF1Error(
+                "A consignatária configurada não está entre as opções do portal. "
+                "Atualize o value da credencial RF1."
+            )
     elif len(nonempty_values) == 1:
         select.select_option(nonempty_values[0])
     else:
