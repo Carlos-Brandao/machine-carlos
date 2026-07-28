@@ -23,7 +23,7 @@ def _salvar(dados: list[dict], path: Path) -> None:
 
 
 def _login(page: Page, login_url: str, usuario: str, senha: str) -> bool:
-    for tentativa in range(1, 5):
+    for tentativa in range(1, 11):
         page.wait_for_load_state("domcontentloaded")
         page.fill(f"{_PFXL}txtUsuario", usuario)
 
@@ -34,19 +34,15 @@ def _login(page: Page, login_url: str, usuario: str, senha: str) -> bool:
         # preenche senha DEPOIS do postback para não ser apagada
         page.fill(f"{_PFXL}txtSenha", senha)
 
-        if tentativa <= 3:
-            # screenshot do elemento evita dessincronização de sessão
-            captcha_el = page.locator("img[src='Captcha.aspx']")
-            captcha_el.wait_for(state="visible")
-            img_bytes = captcha_el.screenshot()
-            os.makedirs("debug_captchas", exist_ok=True)
-            idx = len(os.listdir("debug_captchas"))
-            with open(f"debug_captchas/captcha_login_{idx}.png", "wb") as f:
-                f.write(img_bytes)
-            captcha = _solve_2captcha(img_bytes)
-            print(f"  [login] tentativa {tentativa}: '{captcha}'")
-        else:
-            captcha = input("  captcha manual: ").strip()
+        captcha_el = page.locator("img[src='Captcha.aspx']")
+        captcha_el.wait_for(state="visible")
+        img_bytes = captcha_el.screenshot()
+        os.makedirs("debug_captchas", exist_ok=True)
+        idx = len(os.listdir("debug_captchas"))
+        with open(f"debug_captchas/captcha_login_{idx}.png", "wb") as f:
+            f.write(img_bytes)
+        captcha = _solve_2captcha(img_bytes)
+        print(f"  [login] tentativa {tentativa}: '{captcha}'")
 
         page.fill(f"{_PFXL}txtValidaCaptcha", captcha)
         page.click(f"{_PFXL}btnEntrar")
@@ -138,7 +134,8 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
     signal.signal(signal.SIGINT, _handle)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
+        headless_mode = os.environ.get('HEADLESS', 'False').lower() == 'true'
+        browser = pw.chromium.launch(headless=headless_mode)
         page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
 
         try:

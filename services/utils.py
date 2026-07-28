@@ -1,4 +1,9 @@
+import os
+import sys
+
 def aguardar_enter(msg: str = "\nPressione ENTER para fechar o navegador...") -> None:
+    if os.environ.get('HEADLESS', 'False').lower() == 'true' or not sys.stdin.isatty():
+        return
     print(msg, flush=True)
     try:
         import msvcrt
@@ -6,4 +11,7 @@ def aguardar_enter(msg: str = "\nPressione ENTER para fechar o navegador...") ->
             msvcrt.getch()
     except ImportError:
         pass
-    input()
+    try:
+        input()
+    except Exception:
+        pass
