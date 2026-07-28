@@ -76,9 +76,9 @@ def _login(
         user_field = page.locator(f"{_PFXL}txtUsuario")
         user_field.fill(usuario)
 
-        # Tab dispara o onchange → postback popula o dropdown
-        with page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
-            user_field.press("Tab")
+        # Tab dispara o onchange → postback. No RF1 atual a URL pode não mudar.
+        user_field.press("Tab")
+        page.wait_for_timeout(800)
 
         _select_consignataria(page, consignataria)
 
@@ -100,8 +100,8 @@ def _login(
             continue
 
         page.fill(f"{_PFXL}txtValidaCaptcha", captcha)
-        with page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
-            page.click(f"{_PFXL}btnEntrar")
+        page.click(f"{_PFXL}btnEntrar")
+        page.wait_for_timeout(800)
 
         if LOGIN_PATH.lower() not in page.url.lower():
             print("  [login] OK")
@@ -118,8 +118,8 @@ def _consultar(page: Page, cpf: str) -> dict:
         raise RF1Error("CPF inválido na planilha de entrada.")
     campo = f"{_PFXO}txtCPF"
     page.fill(campo, normalized_cpf)
-    with page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
-        page.click(f"{_PFXO}btnListar")
+    page.click(f"{_PFXO}btnListar")
+    page.wait_for_timeout(800)
 
     sel_nome = f"{_PFXO}lblNome"
     nome = page.locator(sel_nome)

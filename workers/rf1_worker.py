@@ -7,6 +7,7 @@ import os
 import threading
 from time import sleep
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -38,7 +39,7 @@ class RF1Worker:
         while not self.stop_event.is_set():
             try:
                 worked = self.run_once()
-            except (WorkerAPIError, OSError) as exc:
+            except (WorkerAPIError, OSError, PlaywrightError) as exc:
                 LOG.warning("Worker %s aguardando API: %s", self.worker_id, exc)
                 worked = False
             if not worked:
