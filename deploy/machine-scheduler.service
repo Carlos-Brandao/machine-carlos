@@ -6,7 +6,7 @@ Requires=machine-backend.service
 [Service]
 Type=simple
 WorkingDirectory=/root/ROBO_FACIL
-ExecStart=/root/ROBO_FACIL/env/bin/python -u run_worker.py rf1 --workers 3
+ExecStart=/root/ROBO_FACIL/env/bin/python -u run_worker.py rf1 --workers 1
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
