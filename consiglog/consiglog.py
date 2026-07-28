@@ -133,22 +133,20 @@ def _login(page: Page, login_url: str, usuario: str, senha: str) -> None:
             page.wait_for_timeout(2_000)
     for _ in range(5):
         current_url = page.url.lower()
-        if LOGIN_SECOND_STEP.lower() in current_url:
+        if _visible(page, "#txtSenha"):
             page.locator("#txtSenha").fill(senha)
-            with page.expect_navigation(wait_until="domcontentloaded", timeout=25_000):
-                page.locator("#Entrar").click()
+            page.locator("#Entrar").click()
+            page.wait_for_timeout(500)
             continue
-        if LOGIN_SELECTION.lower() in current_url:
-            choice = page.locator("input[id*='imgEntrar']")
-            if not choice.count():
-                raise ConsiglogError("O portal não exibiu uma consignatária selecionável.")
-            with page.expect_navigation(wait_until="domcontentloaded", timeout=25_000):
-                choice.first.click()
+        choice = page.locator("input[id*='imgEntrar']")
+        if choice.count() and choice.first.is_visible():
+            choice.first.click()
+            page.wait_for_timeout(500)
             continue
         if _visible(page, "#txtLogin"):
             page.locator("#txtLogin").fill(usuario)
-            with page.expect_navigation(wait_until="domcontentloaded", timeout=25_000):
-                page.locator("#Entrar").click()
+            page.locator("#Entrar").click()
+            page.wait_for_timeout(500)
             continue
         if "erro.aspx" in current_url:
             page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
