@@ -15,6 +15,7 @@ import unicodedata
 from pathlib import Path
 
 import pandas as pd
+import requests
 from playwright.sync_api import Page, TimeoutError, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -104,6 +105,15 @@ def _dismiss_modal(page: Page) -> str:
 
 
 def _login(page: Page, login_url: str, usuario: str, senha: str) -> None:
+    try:
+        response = requests.get(login_url, timeout=(5, 15))
+        if response.status_code >= 500:
+            raise requests.RequestException(f"HTTP {response.status_code}")
+    except requests.RequestException as exc:
+        raise ConsiglogPortalUnavailable(
+            "Portal ConsigX inacessível pela rede deste worker. "
+            "Solicite a liberação do IP de saída da VPS no portal."
+        ) from exc
     for attempt in range(1, 4):
         try:
             page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
