@@ -440,8 +440,8 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                     except Exception as e:
                         print(f'[ERRO] Falha ao salvar progresso incremental: {e}')
 
-                # Envia planilha parcial no Telegram a cada 50 CPFs
-                if (idx_cpf + 1) % 50 == 0:
+                # Envia planilha parcial no Telegram a cada 500 CPFs
+                if (idx_cpf + 1) % 500 == 0:
                     try:
                         qtd_proc = len(df[df['Status_Robo'].notna()])
                         qtd_sucesso = len(df[df['Status_Robo'] == 'Sucesso'])
