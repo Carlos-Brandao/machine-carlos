@@ -60,6 +60,10 @@ class ConsiglogError(RuntimeError):
     """Falha conhecida de sessão, portal ou configuração ConsigX."""
 
 
+class ConsiglogPortalUnavailable(ConsiglogError):
+    """A origem de execução não alcança o portal ConsigX."""
+
+
 def _digits(value: object) -> str:
     return re.sub(r"\D", "", str(value or ""))
 
@@ -108,7 +112,9 @@ def _login(page: Page, login_url: str, usuario: str, senha: str) -> None:
             if _visible(page, "#txtLogin"):
                 break
             if attempt == 3:
-                raise ConsiglogError("Portal ConsigX indisponível após três tentativas de login.")
+                raise ConsiglogPortalUnavailable(
+                    "Portal ConsigX indisponível a partir desta origem após três tentativas de login."
+                )
             page.wait_for_timeout(2_000)
     for _ in range(5):
         current_url = page.url.lower()

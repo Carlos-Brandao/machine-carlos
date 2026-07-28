@@ -38,7 +38,7 @@ class WorkerRequest(BaseModel):
 class CredentialReportRequest(BaseModel):
     worker_id: str = Field(min_length=3, max_length=160)
     credential_id: int
-    outcome: Literal["success", "transient_failure", "invalid_credentials"]
+    outcome: Literal["success", "transient_failure", "invalid_credentials", "portal_unavailable"]
     error_message: str | None = Field(default=None, max_length=500)
     cooldown_seconds: int = Field(default=900, ge=60, le=86_400)
 

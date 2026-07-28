@@ -7,7 +7,13 @@ import os
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from consiglog.consiglog import DEFAULT_LOGIN_URL, DEFAULT_QUERY_URL, _consult, _login
+from consiglog.consiglog import (
+    DEFAULT_LOGIN_URL,
+    DEFAULT_QUERY_URL,
+    ConsiglogPortalUnavailable,
+    _consult,
+    _login,
+)
 from workers.api_client import WorkerAPIConflict, WorkerAPIError
 from workers.rf1_worker import LOG, RF1Worker
 
@@ -69,6 +75,10 @@ class ConsiglogWorker(RF1Worker):
                     self.api.request("POST", "/api/workers/items/complete", json={"worker_id": self.worker_id, "item_id": int(item["item_id"]), "status": status, "result_data": result, "error_code": code, "error_message": message})
                     processed = True
                 return processed
+            except ConsiglogPortalUnavailable as exc:
+                LOG.warning("Portal ConsigX indisponível para este worker: %s", exc)
+                self._report_credential(credential_id, "portal_unavailable", str(exc)[:500])
+                return False
             except (WorkerAPIError, Exception) as exc:
                 LOG.exception("Falha no worker ConsigX: %s", exc)
                 self._report_credential(credential_id, "transient_failure", str(exc)[:500])
