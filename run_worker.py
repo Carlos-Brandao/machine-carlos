@@ -17,16 +17,21 @@ from machine_admin.secret_store import get_runtime_secret
 from workers.api_client import WorkerAPIClient
 from workers.rf1_worker import RF1Worker
 from workers.consiglog_worker import ConsiglogWorker
+from workers.facil_worker import FacilWorker
 
 
 def main() -> None:
     load_dotenv(Path(__file__).parent / ".env")
     parser = argparse.ArgumentParser(description="Pool de workers Machine")
-    parser.add_argument("platform", choices=["rf1", "consiglog"])
+    parser.add_argument("platform", choices=["rf1", "consiglog", "facil"])
     parser.add_argument("--workers", type=int, default=3)
     args = parser.parse_args()
     worker_count = max(1, min(args.workers, 3))
-    worker_class = {"rf1": RF1Worker, "consiglog": ConsiglogWorker}[args.platform]
+    worker_class = {
+        "rf1": RF1Worker,
+        "consiglog": ConsiglogWorker,
+        "facil": FacilWorker,
+    }[args.platform]
     base_url = os.getenv(
         "WORKER_API_URL", os.getenv("BACKEND_API_URL", "http://127.0.0.1:8000")
     )

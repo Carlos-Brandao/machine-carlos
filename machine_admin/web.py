@@ -6,6 +6,7 @@ import hmac
 import io
 import json
 import secrets
+import tempfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -74,6 +75,7 @@ from machine_admin.services import (
     upsert_integration_secret,
 )
 from services.registry import enabled_municipalities
+from services.telegram import TelegramNotifier
 
 
 PACKAGE_DIR = Path(__file__).parent
@@ -788,18 +790,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.session["flash"] = str(exc)
         return RedirectResponse("/admin/jobs", status_code=303)
 
-    @app.get("/admin/jobs/{job_id}/export.xlsx")
-    def export_job(
-        job_id: int,
-        request: Request,
-        session: Session = Depends(get_db),
-    ):
-        user = require_browser_user(request, session, write_access=True)
-        if isinstance(user, RedirectResponse):
-            return user
-        job = session.get(Job, job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job não encontrado.")
+    def build_job_export(session: Session, job_id: int) -> tuple[bytes, int]:
         rows = session.execute(
             select(JobItem, DatasetRecord, ConsultationResult)
             .join(DatasetRecord, DatasetRecord.id == JobItem.dataset_record_id)
@@ -837,7 +828,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         output = io.BytesIO()
         pd.DataFrame(exported).to_excel(output, index=False)
-        output.seek(0)
+        return output.getvalue(), len(exported)
+
+    @app.get("/admin/jobs/{job_id}/export.xlsx")
+    def export_job(
+        job_id: int,
+        request: Request,
+        session: Session = Depends(get_db),
+    ):
+        user = require_browser_user(request, session, write_access=True)
+        if isinstance(user, RedirectResponse):
+            return user
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job não encontrado.")
+        payload, row_count = build_job_export(session, job_id)
         audit(
             session,
             actor_id=user.id,
@@ -845,11 +850,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             target_type="automation_job",
             target_id=str(job_id),
             ip_address=client_ip(request),
-            details={"rows": len(exported)},
+            details={"rows": row_count},
         )
         session.commit()
         return StreamingResponse(
-            output,
+            io.BytesIO(payload),
             media_type=(
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             ),
@@ -1203,10 +1208,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 error_code=payload.error_code,
                 error_message=payload.error_message,
             )
+            job = session.get(Job, item.job_id)
+            should_notify = bool(
+                job
+                and job.status in {"completed", "failed"}
+                and not session.scalar(
+                    select(JobEvent.id).where(
+                        JobEvent.job_id == job.id,
+                        JobEvent.event_type.in_(
+                            ["telegram.document.sent", "telegram.document.pending"]
+                        ),
+                    )
+                )
+            )
+            if should_notify:
+                session.add(
+                    JobEvent(
+                        job_id=job.id,
+                        event_type="telegram.document.pending",
+                        message="Arquivo final aguardando envio ao Telegram.",
+                    )
+                )
             session.commit()
         except ValueError as exc:
             session.rollback()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if should_notify and job:
+            workbook, _ = build_job_export(session, job.id)
+            temporary_path: Path | None = None
+            sent = False
+            try:
+                with tempfile.NamedTemporaryFile(
+                    prefix=f"job_{job.id}_", suffix=".xlsx", delete=False
+                ) as temporary:
+                    temporary.write(workbook)
+                    temporary_path = Path(temporary.name)
+                notifier = TelegramNotifier.from_environment()
+                if job.telegram_chat_id and notifier.client:
+                    notifier = TelegramNotifier(
+                        notifier.client, int(job.telegram_chat_id)
+                    )
+                sent = notifier.document(
+                    temporary_path,
+                    f"Resultado final — {job.municipality_slug} (job #{job.id})",
+                )
+            finally:
+                if temporary_path:
+                    temporary_path.unlink(missing_ok=True)
+            pending_event = session.scalar(
+                select(JobEvent).where(
+                    JobEvent.job_id == job.id,
+                    JobEvent.event_type == "telegram.document.pending",
+                )
+            )
+            if pending_event:
+                pending_event.event_type = (
+                    "telegram.document.sent" if sent else "telegram.document.error"
+                )
+                pending_event.message = (
+                    "Arquivo final enviado ao Telegram."
+                    if sent
+                    else "Telegram não configurado ou envio recusado."
+                )
+            session.commit()
         return {"ok": True, "item_id": item.id, "status": item.status}
 
     return app

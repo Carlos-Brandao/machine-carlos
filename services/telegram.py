@@ -91,6 +91,14 @@ class TelegramNotifier:
         raw_chat_id = (
             os.getenv("TELEGRAM_NOTIFICATION_CHAT_ID", "").strip()
             or os.getenv("TELEGRAM_CHAT_ID", "").strip()
+            or next(
+                (
+                    value.strip()
+                    for value in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",")
+                    if value.strip()
+                ),
+                "",
+            )
         )
         if not token or not raw_chat_id:
             return cls(None, None)
@@ -112,10 +120,12 @@ class TelegramNotifier:
         except (requests.RequestException, TelegramAPIError):
             LOG.exception("Falha ao enviar notificação para o Telegram.")
 
-    def document(self, file_path: Path, caption: str) -> None:
+    def document(self, file_path: Path, caption: str) -> bool:
         if not self.enabled:
-            return
+            return False
         try:
             self.client.send_document(self.chat_id, file_path, caption)
+            return True
         except (OSError, requests.RequestException, TelegramAPIError):
             LOG.exception("Falha ao enviar documento para o Telegram.")
+            return False

@@ -161,7 +161,14 @@ async def _fechar_modais(page: Page) -> None:
                 pass
 
 
-async def _login(page: Page, base_url: str, usuario: str, senha: str) -> bool:
+async def _login(
+    page: Page,
+    base_url: str,
+    usuario: str,
+    senha: str,
+    *,
+    allow_manual_fallback: bool = True,
+) -> bool:
     # 1. Tentativas Automáticas
     for tentativa in range(1, 4):
         await page.goto(base_url + "/", wait_until="domcontentloaded", timeout=20000)
@@ -185,6 +192,9 @@ async def _login(page: Page, base_url: str, usuario: str, senha: str) -> bool:
             print(f"  [login] erro na tentativa {tentativa}: {e}")
 
         print(f"  [login] falhou (tentativa {tentativa})")
+
+    if not allow_manual_fallback:
+        return False
 
     # 2. Fallback de Login Manual / Remoto
     print("[AVISO] Login automático falhou. Iniciando fallback...")

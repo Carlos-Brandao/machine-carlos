@@ -60,7 +60,13 @@ MUNICIPALITIES: dict[str, MunicipalityDefinition] = {
     "maranguape": MunicipalityDefinition("maranguape", "Maranguape", "safeconsig"),
     "teresina": MunicipalityDefinition("teresina", "Teresina", "facil"),
     "gov-am": MunicipalityDefinition("gov-am", "GOV AM", "facil"),
-    "paulista": MunicipalityDefinition("paulista", "Paulista", "facil"),
+    "paulista": MunicipalityDefinition(
+        "paulista",
+        "Paulista",
+        "facil",
+        login_url="https://www.faciltecnologia.com.br/consigfacil/paulista",
+        query_url="https://www.faciltecnologia.com.br/consigfacil/paulista",
+    ),
     "paulista-previdencia": MunicipalityDefinition(
         "paulista-previdencia", "Paulista Previdência", "facil"
     ),

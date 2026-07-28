@@ -22,7 +22,7 @@ from services.registry import (
     runner_names,
 )
 from services.scheduling import is_within_window, platform_for
-from services.telegram import TelegramClient
+from services.telegram import TelegramClient, TelegramNotifier
 from services.utils import mask_cpf
 
 
@@ -46,7 +46,7 @@ class _Session:
 class ServiceTests(unittest.TestCase):
     def test_registry_is_the_single_consistent_source(self) -> None:
         self.assertNotIn("fenix", runner_names())
-        self.assertNotIn("consiglog", runner_names())
+        self.assertIn("consiglog", runner_names())
         self.assertEqual("safeconsig", platform_for("maranguape"))
         for municipality in enabled_municipalities():
             self.assertIn(municipality.slug, MUNICIPALITIES)
@@ -76,6 +76,15 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual({"id": 1}, client.send_message(12, "ok"))
         self.assertEqual(12, session.calls[0][1]["json"]["chat_id"])
+
+    def test_telegram_notifier_falls_back_to_allowed_user(self) -> None:
+        with patch("services.telegram.get_runtime_secret", return_value="test-token"):
+            with patch.dict(
+                "os.environ", {"TELEGRAM_ALLOWED_USER_IDS": "42"}, clear=True
+            ):
+                notifier = TelegramNotifier.from_environment()
+        self.assertTrue(notifier.enabled)
+        self.assertEqual(42, notifier.chat_id)
 
 if __name__ == "__main__":
     unittest.main()
