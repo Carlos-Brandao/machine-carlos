@@ -20,6 +20,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, TimeoutError, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from machine_admin.secret_store import get_runtime_secret
 from services.utils import aguardar_enter, mask_cpf
 
 
@@ -106,17 +107,18 @@ def _dismiss_modal(page: Page) -> str:
 
 
 def _login(page: Page, login_url: str, usuario: str, senha: str) -> None:
-    try:
-        session = requests.Session()
-        session.trust_env = False
-        response = session.get(login_url, timeout=(5, 15))
-        if response.status_code >= 500:
-            raise requests.RequestException(f"HTTP {response.status_code}")
-    except requests.RequestException as exc:
-        raise ConsiglogPortalUnavailable(
-            "Portal ConsigX inacessível pela rede deste worker. "
-            "Solicite a liberação do IP de saída da VPS no portal."
-        ) from exc
+    if not get_runtime_secret("CONSIGX_HTTPS_PROXY"):
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            response = session.get(login_url, timeout=(5, 15))
+            if response.status_code >= 500:
+                raise requests.RequestException(f"HTTP {response.status_code}")
+        except requests.RequestException as exc:
+            raise ConsiglogPortalUnavailable(
+                "Portal ConsigX inacessível pela rede deste worker. "
+                "Solicite a liberação do IP de saída da VPS no portal."
+            ) from exc
     for attempt in range(1, 4):
         try:
             page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -15,6 +16,7 @@ from consiglog.consiglog import (
     _consult,
     _login,
 )
+from machine_admin.secret_store import get_runtime_secret
 from workers.api_client import WorkerAPIConflict, WorkerAPIError
 from workers.rf1_worker import LOG, RF1Worker
 
@@ -37,13 +39,35 @@ class ConsiglogWorker(RF1Worker):
                 return True
         return False
 
+    @staticmethod
+    def _proxy_settings() -> dict[str, str] | None:
+        """Converte o segredo em configuração Playwright sem registrá-lo em log."""
+        raw = get_runtime_secret("CONSIGX_HTTPS_PROXY")
+        if not raw:
+            return None
+        if "://" not in raw:
+            host, port, username, password = raw.split(":", 3)
+            return {"server": f"http://{host}:{port}", "username": username, "password": password}
+        parsed = urlsplit(raw)
+        if not parsed.hostname or not parsed.port:
+            raise ValueError("Proxy ConsigX inválida.")
+        settings = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+        if parsed.username:
+            settings["username"] = parsed.username
+        if parsed.password:
+            settings["password"] = parsed.password
+        return settings
+
     def _browse(self, job_id: int, credential_id: int, credential: dict[str, object]) -> bool:
         login_url = str(credential.get("login_url") or DEFAULT_LOGIN_URL)
         query_url = str(credential.get("query_url") or DEFAULT_QUERY_URL)
         service = str((credential.get("settings") or {}).get("servico") or "").strip() or None
         username, password = str(credential["username"]), str(credential["password"])
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=os.getenv("HEADLESS", "true").lower() == "true")
+            browser = playwright.chromium.launch(
+                headless=os.getenv("HEADLESS", "true").lower() == "true",
+                proxy=self._proxy_settings(),
+            )
             context = browser.new_context(viewport={"width": 1280, "height": 900})
             page = context.new_page()
             try:
