@@ -13,6 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 from machine_admin.config import Settings
 from machine_admin.datasets import import_dataset
+from machine_admin.datasets import normalise_custom_columns
 from machine_admin.db import get_db
 from machine_admin.models import Base, Dataset, DatasetRecord
 from machine_admin.queue import (
@@ -135,6 +136,26 @@ class AdminCoreTests(unittest.TestCase):
                     uploaded_by_id=1,
                 )
             self.assertEqual(1, len(list(storage.rglob("*.enc"))))
+
+    def test_custom_columns_are_normalized_and_persisted_in_records(self) -> None:
+        self.assertEqual(
+            ["Banco", "Consultor"],
+            normalise_custom_columns("Banco, Consultor\nBanco"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            session = FakeImportSession()
+            dataset = import_dataset(
+                session,
+                settings_for(Path(directory)),
+                municipality_slug="itabuna",
+                filename="base.csv",
+                payload=b"CPF\n01234567890\n",
+                uploaded_by_id=1,
+                custom_columns="Banco, Consultor",
+            )
+            self.assertEqual(["Banco", "Consultor"], dataset.custom_columns)
+            record = next(value for value in session.records if isinstance(value, DatasetRecord))
+            self.assertEqual(["CPF", "Banco", "Consultor"], record.source_data["columns"])
 
     def test_app_registers_admin_and_worker_routes_and_renders_login(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

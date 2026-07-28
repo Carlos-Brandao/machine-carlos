@@ -38,6 +38,17 @@ def _cpf_column(columns: list[str]) -> str:
     return contains
 
 
+def normalise_custom_columns(value: str | list[str] | None) -> list[str]:
+    """Normaliza campos definidos no painel sem alterar o schema SQL."""
+    values = value.replace("\n", ",").split(",") if isinstance(value, str) else (value or [])
+    columns = list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+    if len(columns) > 40:
+        raise ValueError("Informe no máximo 40 campos personalizados.")
+    if any(len(column) > 120 for column in columns):
+        raise ValueError("Cada campo personalizado pode ter no máximo 120 caracteres.")
+    return columns
+
+
 def import_dataset(
     session: Session,
     settings: Settings,
@@ -46,6 +57,7 @@ def import_dataset(
     filename: str,
     payload: bytes,
     uploaded_by_id: int,
+    custom_columns: str | list[str] | None = None,
 ) -> Dataset:
     if not payload or len(payload) > settings.max_upload_bytes:
         raise ValueError("Arquivo vazio ou acima do limite permitido.")
@@ -55,6 +67,7 @@ def import_dataset(
     registration_column = next(
         (column for column in dataframe.columns if "MATRIC" in column.upper()), None
     )
+    extra_columns = normalise_custom_columns(custom_columns)
     digest = hashlib.sha256(payload).hexdigest()
     dataset = Dataset(
         municipality_slug=municipality_slug,
@@ -63,6 +76,7 @@ def import_dataset(
         storage_path="pending",
         sha256=digest,
         row_count=0,
+        custom_columns=extra_columns,
         status="uploading",
     )
     session.add(dataset)
@@ -93,6 +107,8 @@ def import_dataset(
                 str(key): (None if pd.isna(value) else str(value))
                 for key, value in row.to_dict().items()
             }
+            for column in extra_columns:
+                raw_row.setdefault(column, None)
             records.append(
                 DatasetRecord(
                     dataset_id=dataset.id,

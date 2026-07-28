@@ -428,6 +428,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def add_credential(
         request: Request,
         municipality_slug: str = Form(...),
+        custom_columns: str = Form(""),
         label: str = Form(...),
         username: str = Form(...),
         password: str = Form(...),
@@ -596,6 +597,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 filename=file.filename or "base.xlsx",
                 payload=payload,
                 uploaded_by_id=user.id,
+                custom_columns=custom_columns,
             )
             if waiting_job_id:
                 job = session.get(Job, waiting_job_id)
@@ -611,7 +613,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 target_type="dataset",
                 target_id=str(dataset.id),
                 ip_address=client_ip(request),
-                details={"rows": dataset.row_count, "municipality": municipality_slug},
+                details={
+                    "rows": dataset.row_count,
+                    "municipality": municipality_slug,
+                    "custom_columns": dataset.custom_columns,
+                },
             )
             session.commit()
             request.session["flash"] = f"Base importada com {dataset.row_count} registros."

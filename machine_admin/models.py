@@ -158,6 +158,7 @@ class Dataset(TimestampMixin, Base):
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    custom_columns: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="uploading")
     error_message: Mapped[str | None] = mapped_column(Text)
 
