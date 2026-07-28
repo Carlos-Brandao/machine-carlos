@@ -609,6 +609,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         validate_csrf(request, csrf)
         payload = await file.read(settings.max_upload_bytes + 1)
         dataset = None
+        actor_id = user.id
         try:
             dataset = import_dataset(
                 session,
@@ -636,11 +637,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             storage_path = dataset.storage_path if dataset else None
             session.rollback()
             delete_dataset_blob(storage_path)
+            audit(
+                session,
+                actor_id=actor_id,
+                action="dataset.import_rejected",
+                target_type="municipality",
+                target_id=municipality_slug,
+                ip_address=client_ip(request),
+                details={"reason": str(exc)[:500], "filename": (file.filename or "")[:255]},
+            )
+            session.commit()
             request.session["flash"] = str(exc)
         except IntegrityError:
             storage_path = dataset.storage_path if dataset else None
             session.rollback()
             delete_dataset_blob(storage_path)
+            audit(
+                session,
+                actor_id=actor_id,
+                action="dataset.import_rejected",
+                target_type="municipality",
+                target_id=municipality_slug,
+                ip_address=client_ip(request),
+                details={"reason": "A base conflita com um registro já existente.", "filename": (file.filename or "")[:255]},
+            )
+            session.commit()
             request.session["flash"] = "A base conflita com um registro já existente."
         return RedirectResponse("/admin/datasets", status_code=303)
 

@@ -30,10 +30,11 @@ def _read_table(filename: str, payload: bytes) -> pd.DataFrame:
 
 def _validate_required_columns(columns: list[str]) -> tuple[str, str | None]:
     """Exige CPF como primeira coluna; matrícula é opcional na segunda."""
-    if not columns or columns[0].upper() != "CPF":
+    normalized = [column.strip().lstrip("\ufeff").upper() for column in columns]
+    if not normalized or normalized[0] != "CPF":
         raise ValueError("Formato inválido: a primeira coluna deve ser CPF.")
     registration_column = (
-        columns[1] if len(columns) > 1 and columns[1].upper() == "MATRICULA" else None
+        columns[1] if len(columns) > 1 and normalized[1] == "MATRICULA" else None
     )
     return columns[0], registration_column
 
