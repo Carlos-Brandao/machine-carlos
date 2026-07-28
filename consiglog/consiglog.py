@@ -241,11 +241,18 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
         print("[ERRO] A planilha de entrada precisa ter a coluna 'CPF'.")
         return
 
-    # Identifica CPFs já processados
+    # Reseta CPFs que deram TIMEOUT ou ERRO para que sejam reprocessados
+    timeout_or_error_mask = df['Status_Robo'].isin(['TIMEOUT', 'ERRO'])
+    if timeout_or_error_mask.any():
+        reset_count = timeout_or_error_mask.sum()
+        print(f"[INFO] Resetando {reset_count} CPFs marcados com TIMEOUT/ERRO para re-tentativa com re-login...")
+        df.loc[timeout_or_error_mask, 'Status_Robo'] = None
+
+    # Identifica CPFs já processados com resposta conclusiva
     processed_cpfs = set()
     for _, row in df.iterrows():
         status = str(row.get('Status_Robo', '')).strip()
-        if status in ['Sucesso', 'NÃO ENCONTRADO']:
+        if status in ['Sucesso', 'NÃO ENCONTRADO'] or status.startswith('Sucesso'):
             processed_cpfs.add(row[coluna_cpf])
 
     unique_cpfs = df[coluna_cpf].dropna().unique()
@@ -425,12 +432,26 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                     matching_rows = df[df[coluna_cpf] == cpf]
                     for idx in matching_rows.index:
                         df.at[idx, 'Status_Robo'] = 'TIMEOUT'
+                    print("[INFO] Timeout detectado. Efetuando re-login automático no portal ConsigX para restaurar sessão...")
+                    try:
+                        login_consiglog(page, login_url, usuario, senha)
+                        page.goto(consulta_url, timeout=20000)
+                        page.wait_for_load_state("domcontentloaded")
+                    except Exception as relog_err:
+                        print(f"[ERRO] Re-login pós-timeout falhou: {relog_err}")
 
                 except Exception as e:
                     print(f'[ERRO] Falha no CPF {cpf_padded}: {e}')
                     matching_rows = df[df[coluna_cpf] == cpf]
                     for idx in matching_rows.index:
                         df.at[idx, 'Status_Robo'] = 'ERRO'
+                    print("[INFO] Erro detectado. Recarregando sessão do portal...")
+                    try:
+                        login_consiglog(page, login_url, usuario, senha)
+                        page.goto(consulta_url, timeout=20000)
+                        page.wait_for_load_state("domcontentloaded")
+                    except Exception:
+                        pass
 
                 # Salva o progresso incremental a cada 5 CPFs ou no último
                 if (idx_cpf + 1) % 5 == 0 or (idx_cpf + 1) == total_cpfs_to_process:
