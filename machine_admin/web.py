@@ -1042,6 +1042,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             credential.last_error = None
             credential.last_validated_at = now
         else:
+            session.add(
+                JobEvent(
+                    job_id=lease.job_id,
+                    event_type="credencial.erro",
+                    message=(payload.error_message or "Falha reportada pelo worker.")[:500],
+                    event_data={
+                        "credential_id": credential.id,
+                        "outcome": payload.outcome,
+                    },
+                )
+            )
             credential.failure_count += 1
             credential.last_error = payload.error_message or "Falha reportada pelo worker."
             if payload.outcome == "invalid_credentials":

@@ -100,7 +100,16 @@ def _dismiss_modal(page: Page) -> str:
 
 
 def _login(page: Page, login_url: str, usuario: str, senha: str) -> None:
-    page.goto(login_url, wait_until="domcontentloaded")
+    for attempt in range(1, 4):
+        try:
+            page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
+            break
+        except TimeoutError:
+            if _visible(page, "#txtLogin"):
+                break
+            if attempt == 3:
+                raise ConsiglogError("Portal ConsigX indisponível após três tentativas de login.")
+            page.wait_for_timeout(2_000)
     for _ in range(5):
         current_url = page.url.lower()
         if LOGIN_SECOND_STEP.lower() in current_url:
@@ -121,7 +130,7 @@ def _login(page: Page, login_url: str, usuario: str, senha: str) -> None:
                 page.locator("#Entrar").click()
             continue
         if "erro.aspx" in current_url:
-            page.goto(login_url, wait_until="domcontentloaded")
+            page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
             continue
         return
     raise ConsiglogError("O login no ConsigX não concluiu após cinco tentativas.")
