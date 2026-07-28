@@ -376,12 +376,27 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                         page.goto(consulta_url, timeout=20000)
                         page.wait_for_load_state("domcontentloaded")
 
+                    # 1. Fecha modais de aviso/popup de pendências se existirem
+                    page.evaluate("""() => {
+                        const btns = Array.from(document.querySelectorAll('input[id*="btnConfirmarPopup"], input[id*="btnOK"], input[value*="Confirmar Leitura"], button[id*="entendi"]'));
+                        btns.forEach(b => { if (b.offsetWidth > 0 && b.offsetHeight > 0) b.click(); });
+                    }""")
+
                     cpf_selector = 'input#body_cpfTextBox, input[name*="cpfTextBox"]'
                     btn_selector = 'input#body_pesquisarButton, input[id*="pesquisarButton"], input[id*="btnConsultar"], input[name*="btnConsultar"]'
                     page.wait_for_selector(cpf_selector, state='visible', timeout=15000)
                     page.fill(cpf_selector, "")
                     page.fill(cpf_selector, cpf_padded)
-                    page.click(btn_selector)
+
+                    # Submete a consulta tratando interceptações de modais
+                    try:
+                        page.click(btn_selector, timeout=5000)
+                    except Exception:
+                        print("[INFO] Clique direto no botão interceptado por modal — executando clique JS no botão de pesquisar...")
+                        page.evaluate("""() => {
+                            const b = document.querySelector('input#body_pesquisarButton, input[id*="pesquisarButton"], input[id*="btnConsultar"]');
+                            if (b) b.click();
+                        }""")
 
                     page.wait_for_timeout(3000)
                     try:
