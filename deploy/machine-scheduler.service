@@ -1,13 +1,15 @@
 [Unit]
-Description=Machine robot scheduler
-After=network.target machine-backend.service
+Description=Machine RF1 worker pool
+After=network-online.target machine-backend.service
+Requires=machine-backend.service
 
 [Service]
 Type=simple
 WorkingDirectory=/root/ROBO_FACIL
-ExecStart=/root/ROBO_FACIL/env/bin/python -u run_scheduler.py
+ExecStart=/root/ROBO_FACIL/env/bin/python -u run_worker.py rf1 --workers 3
 Restart=always
 RestartSec=5
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

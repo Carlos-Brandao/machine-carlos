@@ -1,76 +1,97 @@
-import os
-import sys
-import paramiko
+"""Sincroniza a aplicação com a VPS sem iniciar ou matar processos."""
+
+from __future__ import annotations
+
+import shlex
+from pathlib import Path
+
+from dotenv import load_dotenv
 from scp import SCPClient
 
-IP = "187.127.4.57"
-USER = "root"
-PASSWORD = "Kbzci;(0XK)TRTbA"
-REMOTE_DIR = "/root/ROBO_FACIL"
+from services.remote import (
+    RemoteConfigurationError,
+    RemoteSettings,
+    create_ssh_client,
+)
 
-def create_ssh_client():
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(IP, username=USER, password=PASSWORD, timeout=15)
-    return ssh
 
-def main():
-    print(f"[1/5] Conectando a {USER}@{IP}...")
+ROOT = Path(__file__).parent
+ROOT_FILES = (
+    ".env",
+    "alembic.ini",
+    "main.py",
+    "requirements.txt",
+    "run_admin.py",
+    "run_backend_api.py",
+    "run_scheduler.py",
+    "run_telegram_bot.py",
+    "run_worker.py",
+)
+SOURCE_DIRS = (
+    "deploy",
+    "facil",
+    "grid",
+    "machine_admin",
+    "migrations",
+    "rf1",
+    "safeconsig",
+    "services",
+    "workers",
+)
+
+
+def _run(ssh, command: str) -> None:
+    _, stdout, stderr = ssh.exec_command(command)
+    exit_code = stdout.channel.recv_exit_status()
+    if exit_code:
+        message = stderr.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(message or f"Comando remoto falhou com código {exit_code}.")
+
+
+def main() -> None:
+    load_dotenv(ROOT / ".env")
     try:
-        ssh = create_ssh_client()
-    except Exception as e:
-        print(f"Erro na conexão SSH: {e}")
-        return
+        settings = RemoteSettings.from_environment()
+        ssh = create_ssh_client(settings)
+    except (RemoteConfigurationError, OSError) as exc:
+        raise SystemExit(f"Falha ao conectar à VPS: {exc}") from exc
 
-    # Criando diretório na VPS
-    ssh.exec_command(f"mkdir -p {REMOTE_DIR}/data {REMOTE_DIR}/temp {REMOTE_DIR}/completed")
+    remote_dir = settings.remote_dir
+    quoted_dir = shlex.quote(remote_dir)
+    try:
+        _run(
+            ssh,
+            f"mkdir -p {quoted_dir}/storage {quoted_dir}/job_logs "
+            f"{quoted_dir}/data {quoted_dir}/temp {quoted_dir}/completed",
+        )
+        with SCPClient(ssh.get_transport()) as scp:
+            for filename in ROOT_FILES:
+                source = ROOT / filename
+                if source.exists():
+                    print(f"Enviando {filename}")
+                    scp.put(str(source), remote_path=remote_dir)
+            for directory in SOURCE_DIRS:
+                source = ROOT / directory
+                if source.exists():
+                    print(f"Enviando {directory}/")
+                    scp.put(str(source), recursive=True, remote_path=remote_dir)
 
-    print("[2/5] Transferindo arquivos para a VPS...")
-    with SCPClient(ssh.get_transport()) as scp:
-        # Envia arquivos na raiz
-        for item in ['.env', 'main.py', 'requirements.txt', 'setup_cron.py']:
-            if os.path.exists(item):
-                print(f"  -> Transferindo {item}")
-                scp.put(item, remote_path=REMOTE_DIR)
-        
-        # Envia pastas recursivamente
-        for folder in ['facil', 'services', 'data']:
-            if os.path.exists(folder):
-                print(f"  -> Transferindo {folder}/")
-                scp.put(folder, recursive=True, remote_path=REMOTE_DIR)
+        _run(
+            ssh,
+            f"cd {quoted_dir} && "
+            "([ -d env ] || python3 -m venv env) && "
+            "./env/bin/pip install -r requirements.txt && "
+            "./env/bin/playwright install chromium",
+        )
+    finally:
+        ssh.close()
 
-    print("[3/5] Configurando ambiente virtual Python na VPS...")
-    # Executa a criação e instalação das dependências
-    setup_commands = [
-        f"cd {REMOTE_DIR} && [ ! -d env ] && python3 -m venv env || echo 'Virtualenv já existe'",
-        f"cd {REMOTE_DIR} && ./env/bin/pip install -r requirements.txt",
-        f"cd {REMOTE_DIR} && ./env/bin/playwright install --with-deps chromium"
-    ]
-    
-    for cmd in setup_commands:
-        print(f"  Executando: {cmd}")
-        stdin, stdout, stderr = ssh.exec_command(cmd)
-        stdout.channel.recv_exit_status() # Aguarda a conclusão
+    print("Arquivos e dependências sincronizados.")
+    print("Próximos passos manuais na VPS, após conferir o banco:")
+    print(f"  cd {remote_dir} && ./env/bin/alembic upgrade head")
+    print("  sudo systemctl daemon-reload")
+    print("  sudo systemctl restart machine-backend machine-scheduler")
 
-    print("[4/5] Configurando crontab na VPS...")
-    # Roda o script setup_cron.py na VPS para atualizar o agendamento
-    stdin, stdout, stderr = ssh.exec_command(f"cd {REMOTE_DIR} && ./env/bin/python setup_cron.py --local")
-    stdout.channel.recv_exit_status()
 
-    print("[5/5] Iniciando o Robô em Background na VPS...")
-    # Mata qualquer processo anterior do main.py na VPS antes de rodar
-    ssh.exec_command("pkill -f 'main.py' || true")
-    
-    # Roda o script em background usando xvfb-run
-    run_cmd = f"cd {REMOTE_DIR} && nohup xvfb-run -a --server-args='-screen 0 1280x720x24' ./env/bin/python -u main.py facil paulista --file data/base_paulista_prev.xlsx -y > nohup.out 2>&1 &"
-    ssh.exec_command(run_cmd)
-
-    print("\n✅ Deploy Finalizado com Sucesso!")
-    print(f"O robô está rodando em background na VPS em {REMOTE_DIR}.")
-    print("Acompanhe os logs remotamente executando na VPS:")
-    print(f"  tail -f {REMOTE_DIR}/nohup.out")
-    
-    ssh.close()
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

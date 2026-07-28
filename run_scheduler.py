@@ -1,19 +1,13 @@
-"""Inicializa o worker da fila de robôs."""
+"""Compatibilidade: o scheduler antigo agora inicia o pool RF1 transacional."""
 
 from __future__ import annotations
 
-import logging
-import os
-from pathlib import Path
+import sys
 
-from dotenv import load_dotenv
-
-from services.job_scheduler import JobScheduler
+from run_worker import main
 
 
-ROOT = Path(__file__).parent
-load_dotenv(ROOT / ".env")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-database_path = Path(os.getenv("BACKEND_DATABASE_PATH", ROOT / "backend.sqlite3"))
-JobScheduler(database_path, ROOT).run_forever()
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        sys.argv.extend(["rf1", "--workers", "3"])
+    main()

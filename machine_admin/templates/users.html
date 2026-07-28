@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title"><div><p class="eyebrow">Acesso</p><h1>Usuários administrativos</h1></div></div>
+<div class="split">
+<section class="card"><h2>Novo usuário</h2><form method="post" class="stack">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <label>Nome<input name="display_name" required></label>
+  <label>E-mail<input type="email" name="email" required></label>
+  <label>Senha temporária<input type="password" name="password" minlength="12" required></label>
+  <label>Papel<select name="role"><option value="operator">Operador</option><option value="viewer">Visualizador</option><option value="admin">Administrador</option></select></label>
+  <button type="submit">Criar usuário</button>
+</form></section>
+<section class="card"><h2>Usuários</h2><div class="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Ativo</th></tr></thead><tbody>
+{% for item in users %}<tr><td>{{ item.display_name }}</td><td>{{ item.email }}</td><td>{{ item.role }}</td><td>{{ 'Sim' if item.active else 'Não' }}</td></tr>{% endfor %}
+</tbody></table></div></section>
+</div>
+{% endblock %}

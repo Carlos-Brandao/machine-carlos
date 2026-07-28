@@ -10,6 +10,8 @@ venv/
 data/
 temp/
 completed/
+storage/
+job_logs/
 
 # Python
 __pycache__/
@@ -35,3 +37,4 @@ Thumbs.db
 
 # Chrome profile
 chrome_profile/
+browser_profiles/

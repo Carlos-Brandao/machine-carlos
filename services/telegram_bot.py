@@ -15,26 +15,30 @@ from typing import Any
 
 import requests
 
+from machine_admin.secret_store import get_runtime_secret
+from services.registry import enabled_municipalities, enabled_platforms
+from services.telegram import TelegramClient
+
 
 LOG = logging.getLogger(__name__)
 SELECTION_TTL_SECONDS = 15 * 60
-TELEGRAM_API_TIMEOUT = 35
 
 
-PREFEITURAS = (
-    ("RF1", (("boa-vista", "Boa Vista"), ("pref2", "pref2"))),
-    ("EasyConsig", (("chapeco", "Chapecó"),)),
-    ("SafeConsig", (("fortaleza", "Fortaleza"), ("tamboril", "Tamboril"))),
+_ENABLED_MUNICIPALITIES = enabled_municipalities()
+PREFEITURAS = tuple(
     (
-        "FácilConsig",
-        (
-            ("teresina", "Teresina"),
-            ("gov-am", "GOV AM"),
-            ("paulista", "Paulista"),
-            ("paulista-previdencia", "Paulista Previdência"),
-            ("mossoro", "Mossoró"),
+        platform.name,
+        tuple(
+            (municipality.slug, municipality.name)
+            for municipality in _ENABLED_MUNICIPALITIES
+            if municipality.platform_slug == platform.slug
         ),
-    ),
+    )
+    for platform in enabled_platforms()
+    if any(
+        municipality.platform_slug == platform.slug
+        for municipality in _ENABLED_MUNICIPALITIES
+    )
 )
 PREFEITURAS_POR_SLUG = {
     slug: nome for _, itens in PREFEITURAS for slug, nome in itens
@@ -57,7 +61,7 @@ class Settings:
 
     @classmethod
     def from_environment(cls) -> "Settings":
-        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        token = get_runtime_secret("TELEGRAM_BOT_TOKEN")
         backend_url = os.getenv("BACKEND_API_URL", "").strip().rstrip("/")
         raw_user_ids = os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")
 
@@ -79,7 +83,7 @@ class Settings:
             telegram_token=token,
             allowed_user_ids=user_ids,
             backend_url=backend_url or None,
-            backend_token=os.getenv("BACKEND_API_TOKEN", "").strip() or None,
+            backend_token=get_runtime_secret("BACKEND_API_TOKEN") or None,
         )
 
 
@@ -116,6 +120,12 @@ class BackendClient:
     def queue(self) -> Any:
         return self._request("GET", "/api/jobs/queue")
 
+    def clear_queue(self) -> Any:
+        return self._request("POST", "/api/jobs/queue/clear", json={})
+
+    def stop_running(self) -> Any:
+        return self._request("POST", "/api/jobs/running/stop", json={})
+
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         if not self.base_url:
             raise RuntimeError("O backend ainda não foi configurado.")
@@ -137,8 +147,7 @@ class TelegramBot:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.backend = BackendClient(settings)
-        self.session = requests.Session()
-        self.api_url = f"https://api.telegram.org/bot{settings.telegram_token}"
+        self.telegram = TelegramClient(settings.telegram_token)
         self.selections: dict[tuple[int, int], Selection] = {}
 
     def run_forever(self) -> None:
@@ -164,6 +173,8 @@ class TelegramBot:
                     {"command": "iniciar", "description": "Selecionar bases para consulta"},
                     {"command": "status", "description": "Ver robôs em execução"},
                     {"command": "fila", "description": "Ver bases na fila"},
+                    {"command": "limparfila", "description": "Cancelar robôs aguardando"},
+                    {"command": "pararrobos", "description": "Parar robôs em execução"},
                     {"command": "cancelar", "description": "Cancelar seleção atual"},
                     {"command": "ajuda", "description": "Ver instruções"},
                 ]
@@ -191,6 +202,10 @@ class TelegramBot:
             self._send_backend_summary(chat_id, "status")
         elif command == "/fila":
             self._send_backend_summary(chat_id, "queue")
+        elif command == "/limparfila":
+            self._request_queue_clear_confirmation(chat_id)
+        elif command == "/pararrobos":
+            self._request_running_stop_confirmation(chat_id)
         elif command == "/cancelar":
             self.selections.pop((chat_id, user_id), None)
             self._send(chat_id, "Seleção atual cancelada.")
@@ -261,6 +276,41 @@ class TelegramBot:
                 f"Bases enviadas: {nomes}\n"
                 f"Jobs adicionados à fila: {len(created)}",
             )
+            return
+
+        if action == "queue:clear:cancel":
+            self._answer_callback(callback_id, "Limpeza cancelada.")
+            self._delete_message(chat_id, callback["message"]["message_id"])
+            return
+
+        if action == "queue:clear:confirm":
+            try:
+                result = self.backend.clear_queue()
+            except RuntimeError:
+                self._answer_callback(callback_id, "Backend indisponível. Tente novamente.", alert=True)
+                return
+            self._answer_callback(callback_id, "Fila limpa.")
+            self._delete_message(chat_id, callback["message"]["message_id"])
+            count = int(result.get("cancelled_count", 0)) if isinstance(result, dict) else 0
+            self._send(chat_id, f"🧹 Fila limpa. {count} robô(s) aguardando foram cancelados.")
+            return
+
+        if action == "running:stop:cancel":
+            self._answer_callback(callback_id, "Parada cancelada.")
+            self._delete_message(chat_id, callback["message"]["message_id"])
+            return
+
+        if action == "running:stop:confirm":
+            try:
+                result = self.backend.stop_running()
+            except RuntimeError:
+                self._answer_callback(callback_id, "Backend indisponível. Tente novamente.", alert=True)
+                return
+            self._answer_callback(callback_id, "Parada solicitada.")
+            self._delete_message(chat_id, callback["message"]["message_id"])
+            count = int(result.get("cancelled_count", 0)) if isinstance(result, dict) else 0
+            self._send(chat_id, f"🛑 Parada solicitada para {count} robô(s) em execução.")
+            return
 
     def _start_selection(self, chat_id: int, user_id: int) -> None:
         selection = Selection()
@@ -317,6 +367,30 @@ class TelegramBot:
         title = "🤖 Status dos robôs" if operation == "status" else "⏳ Fila de consultas"
         formatted = self._format_status(result) if operation == "status" else self._format_queue(result)
         self._send(chat_id, f"{title}\n\n{formatted}")
+
+    def _request_queue_clear_confirmation(self, chat_id: int) -> None:
+        self._send(
+            chat_id,
+            "🧹 Limpar fila?\n\nIsso cancelará apenas os robôs aguardando. Robôs em execução não serão interrompidos.",
+            {
+                "inline_keyboard": [
+                    [{"text": "🧹 Sim, limpar fila", "callback_data": "queue:clear:confirm"}],
+                    [{"text": "Cancelar", "callback_data": "queue:clear:cancel"}],
+                ]
+            },
+        )
+
+    def _request_running_stop_confirmation(self, chat_id: int) -> None:
+        self._send(
+            chat_id,
+            "🛑 Parar robôs em execução?\n\nOs jobs em andamento receberão uma solicitação de parada. A fila aguardando não será alterada.",
+            {
+                "inline_keyboard": [
+                    [{"text": "🛑 Sim, parar robôs", "callback_data": "running:stop:confirm"}],
+                    [{"text": "Cancelar", "callback_data": "running:stop:cancel"}],
+                ]
+            },
+        )
 
     @staticmethod
     def _format_status(result: Any) -> str:
@@ -386,6 +460,8 @@ class TelegramBot:
             "/iniciar — selecionar uma ou mais bases\n"
             "/status — consultar execuções em andamento\n"
             "/fila — consultar as próximas bases\n"
+            "/limparfila — cancelar todos os robôs aguardando\n"
+            "/pararrobos — solicitar parada dos robôs em execução\n"
             "/cancelar — cancelar a seleção atual\n"
             "/ajuda — mostrar esta mensagem"
         )
@@ -431,11 +507,4 @@ class TelegramBot:
         self._telegram("answerCallbackQuery", payload)
 
     def _telegram(self, method: str, payload: dict[str, Any]) -> Any:
-        response = self.session.post(
-            f"{self.api_url}/{method}", json=payload, timeout=TELEGRAM_API_TIMEOUT
-        )
-        response.raise_for_status()
-        data = response.json()
-        if not data.get("ok"):
-            raise requests.RequestException(data.get("description", "Erro na Bot API"))
-        return data.get("result")
+        return self.telegram.call(method, payload)

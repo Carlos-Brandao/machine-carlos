@@ -1,4 +1,5 @@
 import os
+import re
 import signal
 import sys
 import traceback
@@ -9,71 +10,121 @@ from playwright.sync_api import Page, sync_playwright, TimeoutError
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.captcha import _solve_2captcha
-from services.utils import aguardar_enter
+from services.utils import aguardar_enter, mask_cpf
 
 
 _PFXO = "#ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_"
 _PFXL = "#ctl00_ContentPlaceHolder1_"
+DEFAULT_LOGIN_URL = "https://boavista.rf1consig.com.br/SGConsignataria/ConsigAcessoUsuarioLogar.aspx"
+DEFAULT_QUERY_URL = "https://boavista.rf1consig.com.br/SGConsignataria/GESTOR/CADPessoaListar.aspx"
+LOGIN_PATH = "ConsigAcessoUsuarioLogar.aspx"
+LOGIN_ATTEMPTS = 5
+
+
+class RF1Error(RuntimeError):
+    """Falha conhecida na navegação ou configuração do RF1."""
 
 
 def _salvar(dados: list[dict], path: Path) -> None:
-    tmp = path.with_suffix(".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.stem}.tmp{path.suffix or '.xlsx'}")
     pd.DataFrame(dados).to_excel(tmp, index=False)
     tmp.replace(path)
 
 
-def _login(page: Page, login_url: str, usuario: str, senha: str) -> bool:
-    for tentativa in range(1, 5):
-        page.wait_for_load_state("domcontentloaded")
-        page.fill(f"{_PFXL}txtUsuario", usuario)
+def _digits(value: object) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _select_consignataria(page: Page, configured_value: str | None) -> None:
+    selector = f"{_PFXL}ddlConsignataria"
+    select = page.locator(selector)
+    if select.count() != 1:
+        raise RF1Error("O portal não exibiu o campo de consignatária.")
+    options = select.locator("option")
+    values = [option.get_attribute("value") or "" for option in options.all()]
+    nonempty_values = [value for value in values if value]
+    if not nonempty_values:
+        # No portal de Boa Vista esse select pode permanecer sem <option> mesmo
+        # com o vínculo resolvido no servidor. Nessa situação o login prossegue.
+        if configured_value:
+            raise RF1Error(
+                "RF1_BOA_VISTA_CONSIGNATARIA foi configurada, mas o portal não "
+                "ofereceu opções de consignatária após o postback."
+            )
+        return
+    if configured_value:
+        select.select_option(str(configured_value))
+    elif len(nonempty_values) == 1:
+        select.select_option(nonempty_values[0])
+    else:
+        raise RF1Error(
+            "O usuário possui mais de uma consignatária. Configure "
+            "RF1_BOA_VISTA_CONSIGNATARIA com o value correto."
+        )
+
+
+def _login(
+    page: Page,
+    login_url: str,
+    usuario: str,
+    senha: str,
+    consignataria: str | None = None,
+) -> bool:
+    for tentativa in range(1, LOGIN_ATTEMPTS + 1):
+        page.goto(login_url, wait_until="domcontentloaded")
+        user_field = page.locator(f"{_PFXL}txtUsuario")
+        user_field.fill(usuario)
 
         # Tab dispara o onchange → postback popula o dropdown
-        page.press(f"{_PFXL}txtUsuario", "Tab")
-        page.wait_for_load_state("networkidle", timeout=10_000)
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
+            user_field.press("Tab")
+
+        _select_consignataria(page, consignataria)
 
         # preenche senha DEPOIS do postback para não ser apagada
         page.fill(f"{_PFXL}txtSenha", senha)
 
-        if tentativa <= 3:
-            # screenshot do elemento evita dessincronização de sessão
-            captcha_el = page.locator("img[src='Captcha.aspx']")
-            captcha_el.wait_for(state="visible")
-            img_bytes = captcha_el.screenshot()
+        # Screenshot do elemento mantém o desafio e a sessão sincronizados.
+        captcha_el = page.locator("img[src='Captcha.aspx']")
+        captcha_el.wait_for(state="visible", timeout=10_000)
+        img_bytes = captcha_el.screenshot()
+        if os.getenv("CAPTCHA_DEBUG", "0") == "1":
             os.makedirs("debug_captchas", exist_ok=True)
             idx = len(os.listdir("debug_captchas"))
             with open(f"debug_captchas/captcha_login_{idx}.png", "wb") as f:
                 f.write(img_bytes)
-            captcha = _solve_2captcha(img_bytes)
-            print(f"  [login] tentativa {tentativa}: '{captcha}'")
-        else:
-            captcha = input("  captcha manual: ").strip()
+        captcha = _solve_2captcha(img_bytes)
+        if not re.fullmatch(r"\d{5}", captcha):
+            print(f"  [login] resposta inválida do captcha na tentativa {tentativa}.")
+            continue
 
         page.fill(f"{_PFXL}txtValidaCaptcha", captcha)
-        page.click(f"{_PFXL}btnEntrar")
-        page.wait_for_load_state("domcontentloaded")
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
+            page.click(f"{_PFXL}btnEntrar")
 
-        if "ConsigAcessoUsuarioLogar" not in page.url:
+        if LOGIN_PATH.lower() not in page.url.lower():
             print("  [login] OK")
             return True
 
         print(f"  [login] falhou (tentativa {tentativa})")
-        page.goto(login_url)
 
     return False
 
 
 def _consultar(page: Page, cpf: str) -> dict:
+    normalized_cpf = _digits(cpf)
+    if len(normalized_cpf) != 11:
+        raise RF1Error("CPF inválido na planilha de entrada.")
     campo = f"{_PFXO}txtCPF"
-    page.fill(campo, cpf)
-    page.press(campo, "Tab")
-    page.wait_for_timeout(300)
-    page.click(f"{_PFXO}btnListar")
+    page.fill(campo, normalized_cpf)
+    with page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
+        page.click(f"{_PFXO}btnListar")
 
     sel_nome = f"{_PFXO}lblNome"
-    page.wait_for_function(
-        f"document.querySelector('{sel_nome}').innerText.trim().length > 0",
-        timeout=10000,
-    )
+    nome = page.locator(sel_nome)
+    if nome.count() != 1 or not nome.inner_text().strip():
+        raise TimeoutError("Servidor não localizado.")
 
     def t(sel: str) -> str:
         return page.inner_text(f"{_PFXO}{sel}").strip()
@@ -92,15 +143,25 @@ def _consultar(page: Page, cpf: str) -> dict:
         "Categoria":          t("lblCategoria"),
         "Data_Admissao":      t("lblDataAdmissao"),
         "Situacao_Ativo":     t("lblAtivo"),
+        "Prazo_Final_Vinculo": t("lblPrazoFinal"),
+        "Ano_Mes_Cadastro":    t("lblAnoMesCadastro"),
+        "Ano_Mes_Atualizacao": t("lblAnoMesAtualizacao"),
+        "Competencia_Ferias":  t("lblCompetenciaFerias"),
+        "Restricao_Renegociacao_Portabilidade": t("lblRestricaoRenCompr"),
+        "Media_Margem_12_Meses": t("lblMediaMargem"),
+        "Salario_Base":        t("lblValorSalarioBase"),
         "Status_Robo":        "Sucesso",
     }
 
 
 def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> None:
-    login_url = config["url_login"]
-    consulta_url = config["url_consulta"]
-    usuario = config["usuario"]
-    senha = config["senha"]
+    login_url = config.get("url_login", DEFAULT_LOGIN_URL).strip()
+    consulta_url = config.get("url_consulta", DEFAULT_QUERY_URL).strip()
+    usuario = config.get("usuario", "").strip()
+    senha = config.get("senha", "")
+    consignataria = config.get("consignataria", "").strip() or None
+    if not usuario or not senha:
+        raise RF1Error("Usuário e senha do RF1 Boa Vista não configurados.")
 
     input_file = Path(input_file)
     temp_file = Path(temp_file)
@@ -111,8 +172,12 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
     if coluna_cpf is None:
         print("Coluna 'CPF' não encontrada.")
         return
+    df_original["_CPF_Normalizado"] = df_original[coluna_cpf].map(_digits)
 
-    lista_cpfs = df_original[coluna_cpf].str.strip().tolist()
+    lista_cpfs = []
+    for cpf in df_original["_CPF_Normalizado"].tolist():
+        if cpf and cpf not in lista_cpfs:
+            lista_cpfs.append(cpf)
 
     resultados: list[dict] = []
     if temp_file.exists():
@@ -120,8 +185,8 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
             resultados = pd.read_excel(temp_file, dtype=str).to_dict("records")
         except Exception:
             resultados = []
-    feitos = {"".join(filter(str.isdigit, str(r.get("CPF_Chave", "")))) for r in resultados}
-    pendentes = [c for c in lista_cpfs if "".join(filter(str.isdigit, c)) not in feitos]
+    feitos = {_digits(r.get("CPF_Chave", "")) for r in resultados}
+    pendentes = [cpf for cpf in lista_cpfs if cpf not in feitos]
     print(f"{len(resultados)} processados, {len(pendentes)} pendentes.")
     if not pendentes:
         print("Nada a processar.")
@@ -138,12 +203,12 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
     signal.signal(signal.SIGINT, _handle)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
+        headless = os.getenv("HEADLESS", "false").lower() == "true"
+        browser = pw.chromium.launch(headless=headless)
         page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
 
         try:
-            page.goto(login_url)
-            if not _login(page, login_url, usuario, senha):
+            if not _login(page, login_url, usuario, senha, consignataria):
                 print("Login falhou após várias tentativas.")
                 return
 
@@ -152,10 +217,17 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
                     print("Processo interrompido.")
                     break
 
-                print(f"\n[{i}/{len(pendentes)}] CPF: {cpf}")
+                print(f"\n[{i}/{len(pendentes)}] CPF: {mask_cpf(cpf)}")
                 try:
+                    if LOGIN_PATH.lower() in page.url.lower():
+                        if not _login(page, login_url, usuario, senha, consignataria):
+                            raise RF1Error("Sessão expirou e o novo login falhou.")
                     if consulta_url not in page.url:
-                        page.goto(consulta_url)
+                        page.goto(consulta_url, wait_until="domcontentloaded")
+                    if LOGIN_PATH.lower() in page.url.lower():
+                        if not _login(page, login_url, usuario, senha, consignataria):
+                            raise RF1Error("Sessão expirou ao abrir a consulta.")
+                        page.goto(consulta_url, wait_until="domcontentloaded")
                     page.wait_for_selector(f"{_PFXO}btnListar")
                     try:
                         dados = _consultar(page, cpf)
@@ -176,10 +248,10 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
                 df_final = pd.merge(
                     df_original,
                     pd.DataFrame(resultados),
-                    left_on=coluna_cpf,
+                    left_on="_CPF_Normalizado",
                     right_on="CPF_Chave",
                     how="left",
-                ).drop(columns=["CPF_Chave"], errors="ignore")
+                ).drop(columns=["_CPF_Normalizado", "CPF_Chave"], errors="ignore")
                 df_final.to_excel(output_file, index=False)
                 if temp_file.exists():
                     temp_file.unlink()
@@ -191,4 +263,6 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
             print(f"\nERRO: {e}")
         finally:
             signal.signal(signal.SIGINT, _orig)
-            aguardar_enter()
+            if not headless:
+                aguardar_enter()
+            browser.close()

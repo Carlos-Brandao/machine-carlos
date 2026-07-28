@@ -8,12 +8,13 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
+from services.registry import runner_names
 from services.scheduling import is_within_window, next_start_time
 
 load_dotenv(Path(__file__).parent / ".env")
 
-# As opções de bots disponíveis no dispatcher
-BOTS = ["rf1", "fenix", "facil", "grid", "safeconsig"]
+# Runners ativos são derivados do cadastro único.
+BOTS = list(runner_names())
 ROOT = Path(__file__).parent
 
 
@@ -37,7 +38,10 @@ def get_convenios(bot: str) -> list[str]:
 
 
 def get_config(bot: str, convenio: str) -> dict:
-    prefix = f"{bot.upper()}_{convenio.upper()}_"
+    # Slugs públicos usam hífen (ex.: ``boa-vista``), mas variáveis de
+    # ambiente precisam ser portáveis entre shells e usam sublinhado.
+    normalized_convenio = convenio.upper().replace("-", "_")
+    prefix = f"{bot.upper()}_{normalized_convenio}_"
     config = {
         key[len(prefix):].lower(): val
         for key, val in os.environ.items()
@@ -77,9 +81,6 @@ def run_bot(bot: str, config: dict, input_file: Path, temp_file: Path, output_fi
     sys.path.insert(0, str(ROOT))
     if bot == "rf1":
         from rf1.rf1 import main
-        main(config=config, input_file=input_file, temp_file=temp_file, output_file=output_file)
-    elif bot == "fenix":
-        from fenix.fenix import main
         main(config=config, input_file=input_file, temp_file=temp_file, output_file=output_file)
     elif bot == "facil":
         from facil.facil import main

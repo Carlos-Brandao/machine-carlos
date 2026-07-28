@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title"><div><p class="eyebrow">Visão geral</p><h1>Operação</h1></div><a class="button" href="/admin/datasets">Importar base</a></div>
+<section class="metrics">
+  <article><span>Jobs ativos</span><strong>{{ counts.jobs_active }}</strong></article>
+  <article><span>Itens pendentes</span><strong>{{ counts.items_pending }}</strong></article>
+  <article><span>Credenciais</span><strong>{{ counts.credentials }}</strong></article>
+  <article><span>Bases</span><strong>{{ counts.datasets }}</strong></article>
+</section>
+<section class="card">
+  <div class="section-title"><h2>Jobs recentes</h2><a href="/admin/jobs">Ver todos</a></div>
+  <div class="table-wrap"><table><thead><tr><th>ID</th><th>Convênio</th><th>Status</th><th>Progresso</th><th>Criado</th></tr></thead><tbody>
+  {% for job in jobs %}<tr><td>#{{ job.id }}</td><td>{{ job.municipality_slug }}</td><td><span class="status {{ job.status }}">{{ job.status }}</span></td><td>{{ job.completed_items }}/{{ job.total_items }}</td><td>{{ job.created_at.strftime('%d/%m %H:%M') if job.created_at else '-' }}</td></tr>
+  {% else %}<tr><td colspan="5" class="empty">Nenhum job criado.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

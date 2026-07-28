@@ -1,3 +1,4 @@
+import os
 import signal
 import sys
 import threading
@@ -9,7 +10,7 @@ import pandas as pd
 from playwright.sync_api import Page, sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from services.utils import aguardar_enter
+from services.utils import aguardar_enter, mask_cpf
 
 
 def _fmt_cpf(cpf: str) -> str:
@@ -18,7 +19,8 @@ def _fmt_cpf(cpf: str) -> str:
 
 
 def _salvar(dados: list[dict], path: Path) -> None:
-    tmp = path.with_suffix(".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.stem}.tmp{path.suffix or '.xlsx'}")
     pd.DataFrame(dados).to_excel(tmp, index=False)
     tmp.replace(path)
 
@@ -46,17 +48,18 @@ def _aguardar_ajax(page: Page, timeout: int = 15000) -> None:
     time.sleep(0.5)
 
 
-def _login(page: Page, url: str, usuario: str, senha: str) -> None:
+def _login(
+    page: Page, url: str, usuario: str, senha: str, timeout_ms: int = 300_000
+) -> None:
     page.goto(url)
     page.wait_for_load_state("networkidle")
     page.fill("#username", usuario)
     page.fill("#password", senha)
-    print("Resolva o reCAPTCHA, clique em Login e pressione ENTER aqui.")
-    input("ENTER: ")
-    page.wait_for_url("**/selecaoPerfil.seam**", timeout=60_000)
+    print("Resolva o reCAPTCHA e clique em Login; o robô aguardará a navegação.")
+    page.wait_for_url("**/selecaoPerfil.seam**", timeout=timeout_ms)
 
 
-def _selecionar_perfil(page: Page, url_perfil: str) -> None:
+def _selecionar_perfil(page: Page, url_perfil: str, config: dict) -> None:
     page.goto(url_perfil)
     page.wait_for_selector(
         "#idTipoUsuarioConsignataria\\:tipoPessoaConsignataria",
@@ -64,23 +67,29 @@ def _selecionar_perfil(page: Page, url_perfil: str) -> None:
         timeout=30000,
     )
 
-    page.locator("#idTipoUsuarioConsignataria\\:tipoPessoaConsignataria").select_option("4406")
+    page.locator("#idTipoUsuarioConsignataria\\:tipoPessoaConsignataria").select_option(
+        str(config.get("tipo_pessoa", "4406"))
+    )
     _aguardar_ajax(page)
 
     page.wait_for_selector(
-        "#idEmpresaConsignataria\\:empresaConsignataria option[value='7626']",
+        f"#idEmpresaConsignataria\\:empresaConsignataria option[value='{config.get('empresa', '7626')}']",
         state="attached",
         timeout=15000,
     )
-    page.locator("#idEmpresaConsignataria\\:empresaConsignataria").select_option("7626")
+    page.locator("#idEmpresaConsignataria\\:empresaConsignataria").select_option(
+        str(config.get("empresa", "7626"))
+    )
     _aguardar_ajax(page)
 
     page.wait_for_selector(
-        "#idPerfilConsignataria\\:perfilConsignataria option[value='10443']",
+        f"#idPerfilConsignataria\\:perfilConsignataria option[value='{config.get('perfil', '10443')}']",
         state="attached",
         timeout=15000,
     )
-    page.locator("#idPerfilConsignataria\\:perfilConsignataria").select_option("10443")
+    page.locator("#idPerfilConsignataria\\:perfilConsignataria").select_option(
+        str(config.get("perfil", "10443"))
+    )
     time.sleep(0.5)
 
     page.click("#btnAcessarSistema")
@@ -98,7 +107,7 @@ def _ir_para_margem(page: Page) -> None:
 
 def _consultar(page: Page, cpf: str) -> dict | None:
     cpf_fmt = _fmt_cpf(cpf)
-    print(f"CPF: {cpf_fmt}")
+    print(f"CPF: {mask_cpf(cpf_fmt)}")
 
     _digitar_cpf(page, "#campo_cpf", cpf_fmt)
     time.sleep(0.3)
@@ -203,11 +212,23 @@ def main(config: dict, input_file: Path, temp_file: Path, output_file: Path) -> 
     signal.signal(signal.SIGINT, _handle)
 
     with sync_playwright() as p:
-        page = p.chromium.launch(headless=False, channel="msedge").new_context().new_page()
+        headless = os.getenv("HEADLESS", "false").lower() == "true"
+        channel = config.get("browser_channel", "").strip() or None
+        launch_options = {"headless": headless}
+        if channel:
+            launch_options["channel"] = channel
+        page = p.chromium.launch(**launch_options).new_context().new_page()
 
         try:
-            _login(page, config["url_login"], config["usuario"], config["senha"])
-            _selecionar_perfil(page, config["url_perfil"])
+            login_timeout_ms = int(config.get("login_timeout_ms", "300000"))
+            _login(
+                page,
+                config["url_login"],
+                config["usuario"],
+                config["senha"],
+                login_timeout_ms,
+            )
+            _selecionar_perfil(page, config["url_perfil"], config)
             _ir_para_margem(page)
 
             for i, cpf in enumerate(pendentes, 1):

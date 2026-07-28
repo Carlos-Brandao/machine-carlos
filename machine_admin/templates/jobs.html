@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title"><div><p class="eyebrow">Execução</p><h1>Jobs</h1></div><a class="button" href="/admin/datasets">Nova base</a></div>
+<section class="card"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Convênio</th><th>Status</th><th>Total</th><th>Concluídos</th><th>Falhas</th><th>Solicitado</th><th></th></tr></thead><tbody>
+{% for item in jobs %}<tr><td>#{{ item.id }}</td><td>{{ item.municipality_slug }}</td><td><span class="status {{ item.status }}">{{ item.status }}</span></td><td>{{ item.total_items }}</td><td>{{ item.completed_items }}</td><td>{{ item.failed_items }}</td><td>{{ item.created_at.strftime('%d/%m/%Y %H:%M') }}</td><td>{% if item.completed_items or item.failed_items %}<a class="button small" href="/admin/jobs/{{ item.id }}/export.xlsx">Exportar</a>{% endif %}</td></tr>{% else %}<tr><td colspan="8" class="empty">Nenhum job.</td></tr>{% endfor %}
+</tbody></table></div></section>
+{% endblock %}

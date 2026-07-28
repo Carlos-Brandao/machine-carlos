@@ -7,6 +7,7 @@ Dispatcher unificado para automação de consultas de margem em múltiplos siste
 ## Requisitos
 
 - Python 3.11+
+- PostgreSQL 15+
 - Google Chrome ou Microsoft Edge instalado
 
 ---
@@ -29,6 +30,12 @@ pip install -r requirements.txt
 playwright install
 ```
 
+Crie o banco e aplique a migration antes de iniciar os serviços:
+
+```bash
+alembic upgrade head
+```
+
 ---
 
 ## Configuração — `.env`
@@ -37,14 +44,20 @@ Copie o `.env` de exemplo e preencha com os dados de cada convênio:
 
 ```env
 # Lista de convênios disponíveis para o bot (separados por vírgula)
-RF1_CONVENIOS=boavista
+RF1_CONVENIOS=boa-vista
+RF1_BOA_VISTA_URL_LOGIN=https://...
+RF1_BOA_VISTA_URL_CONSULTA=https://...
+RF1_BOA_VISTA_USUARIO=...
+RF1_BOA_VISTA_SENHA=...
+TWOCAPTCHA_API_KEY=...
+HEADLESS=true
 
 # Dados do convênio — padrão: {BOT}_{CONVENIO}_{CHAVE}
 RF1_BOAVISTA_URL_LOGIN=https://...
 RF1_BOAVISTA_URL_CONSULTA=https://...
 ```
 
-> Cada bot lê automaticamente todas as variáveis com o prefixo `{BOT}_{CONVENIO}_` e as injeta como configuração. Não é necessário alterar nenhum código ao adicionar novos convênios.
+> Cada bot lê automaticamente todas as variáveis com o prefixo `{BOT}_{CONVENIO}_` e as injeta como configuração. Slugs com hífen usam sublinhado na variável: `boa-vista` vira `RF1_BOA_VISTA_*`. Não é necessário alterar nenhum código ao adicionar novos convênios.
 
 ### Controle pelo Telegram
 
@@ -57,6 +70,7 @@ Acrescente ao `.env`:
 ```env
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USER_IDS=123456789
+TELEGRAM_NOTIFICATION_CHAT_ID=-1001234567890
 BACKEND_API_URL=https://seu-backend.exemplo
 BACKEND_API_TOKEN=...
 ```
@@ -84,29 +98,106 @@ python run_telegram_bot.py --set-commands
 python run_telegram_bot.py
 ```
 
-O bot aceita `/iniciar`, `/status`, `/fila`, `/cancelar` e `/ajuda`.
-`/iniciar` apresenta uma seleção múltipla de Boa Vista, pref2, Chapecó,
-Fortaleza, Tamboril, Teresina, GOV AM, Paulista, Paulista Previdência e Mossoró.
+O bot aceita `/iniciar`, `/status`, `/fila`, `/limparfila`, `/pararrobos`, `/cancelar` e `/ajuda`.
+`/iniciar` apresenta apenas os convênios ativos no cadastro central: Boa Vista,
+Fortaleza, Maranguape, Teresina, GOV AM, Paulista, Paulista Previdência e
+Mossoró.
+
+O projeto usa **um único bot do Telegram**: o mesmo `TELEGRAM_BOT_TOKEN` opera
+o controlador e envia as notificações dos robôs. Configure
+`TELEGRAM_NOTIFICATION_CHAT_ID` para definir o destino dessas notificações.
+`TELEGRAM_CHAT_ID` continua aceito temporariamente apenas para compatibilidade.
 
 ### Backend da fila
 
-O backend interno pode ser iniciado sem dependências adicionais:
+O painel e a API usam o mesmo processo FastAPI e o mesmo PostgreSQL:
 
 ```bash
 python run_backend_api.py
 ```
 
-Ele persiste jobs em SQLite, exige `Authorization: Bearer <BACKEND_API_TOKEN>`
-e disponibiliza as rotas usadas pelo bot. O scheduler que inicia os scripts dos
-robôs é iniciado separadamente:
+Por padrão o serviço escuta somente em `127.0.0.1:8000`; publique-o atrás de um
+proxy HTTPS. As rotas operacionais exigem `Authorization: Bearer <token>`.
+O pool inicial de Boa Vista é iniciado separadamente:
 
 ```bash
-python run_scheduler.py
+python run_worker.py rf1 --workers 3
 ```
 
-O scheduler retira no máximo três jobs elegíveis da fila. Para cada prefeitura,
-configure o comando de execução no `.env` (`ROBOT_COMMAND_<PREFEITURA>`). Sem
-esse comando, o job permanece `queued`, sem iniciar nada acidentalmente.
+Cada worker reserva uma credencial diferente e pequenos lotes com
+`FOR UPDATE SKIP LOCKED`. Três logins ativos permitem três sessões sobre a mesma
+base, sem consultar o mesmo registro duas vezes. `run_scheduler.py` permanece
+somente como entrada compatível e inicia esse mesmo pool RF1.
+
+### Painel administrativo
+
+O painel mínimo oferece:
+
+- login administrativo com papéis `admin`, `operator` e `viewer`;
+- criação e revogação de tokens com escopos;
+- cofre cifrado para Telegram, 2Captcha e tokens internos;
+- cadastro de múltiplas credenciais por convênio;
+- importação cifrada de `.xlsx`/`.csv`, criação de jobs e exportação;
+- dashboard de jobs, itens, falhas e progresso.
+
+Configure no `.env`:
+
+```env
+DATABASE_URL=postgresql://machine:SENHA_FORTE@127.0.0.1:5432/machine
+ADMIN_SESSION_SECRET=gere-um-valor-aleatorio-com-48-ou-mais-caracteres
+APP_MASTER_KEY=gere-uma-chave-base64-urlsafe-de-32-bytes
+ADMIN_ALLOWED_HOSTS=admin.seu-dominio.com,localhost,127.0.0.1
+ADMIN_COOKIE_SECURE=true
+BOOTSTRAP_ADMIN_EMAIL=admin@seu-dominio.com
+BOOTSTRAP_ADMIN_PASSWORD=uma-senha-inicial-com-12-ou-mais-caracteres
+```
+
+Gere as duas chaves localmente:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+python -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+Depois do primeiro login, remova as duas variáveis `BOOTSTRAP_ADMIN_*`. Preserve
+e faça backup seguro de `APP_MASTER_KEY`: trocá-la sem uma rotina de rotação
+torna inacessíveis os segredos e dados já cifrados.
+
+No painel, crie dois tokens:
+
+- controlador Telegram: `jobs:read,jobs:write`, salvo como `BACKEND_API_TOKEN`;
+- workers: `jobs:read,workers:execute`, salvo como `WORKER_API_TOKEN`.
+
+Os segredos `TELEGRAM_BOT_TOKEN` e `TWOCAPTCHA_API_KEY` também podem ser movidos
+para o cofre. O banco é a fonte preferencial; o `.env` permanece apenas como
+fallback de transição. Reinicie processos externos após rotacionar um segredo.
+
+### Banco de dados na VPS
+
+Use PostgreSQL em produção e acrescente ao `.env`:
+
+```env
+DATABASE_URL=postgresql://machine:SENHA_FORTE@127.0.0.1:5432/machine
+```
+
+Alembic cria e versiona as tabelas de plataformas, prefeituras, usuários,
+credenciais, bases, registros, jobs, leases, eventos e resultados. O Excel
+continua sendo entrada e exportação; PostgreSQL é a base oficial. Bases, CPFs,
+linhas originais, resultados e credenciais ficam cifrados com AES-GCM. Tokens
+de API são armazenados somente como hash. Não versione a `DATABASE_URL` e faça
+backup diário do banco e de `storage/`.
+
+Se a VPS já recebeu o esquema PostgreSQL experimental anterior, não aplique a
+migration inicial por cima dele. Use um banco novo ou prepare uma migração de
+dados específica depois de conferir as tabelas existentes.
+
+### Administração remota
+
+`deploy.py` e `setup_cron.py --vps` leem as credenciais somente do ambiente.
+Configure `MACHINE_SSH_HOST`, `MACHINE_SSH_USER` e, de preferência,
+`MACHINE_SSH_KEY_FILE`. Antes do primeiro deploy, registre a chave pública do
+servidor em `known_hosts` (`ssh-keyscan -H <host> >> ~/.ssh/known_hosts`).
+Senhas, chaves privadas e endereços de produção não devem ser versionados.
 
 ### Regras de agendamento dos robôs
 
@@ -119,9 +210,7 @@ fora da janela permanecem em fila até o próximo início permitido.
 | SafeConsig | segunda a sexta | 07:00 | 18:00 |
 | FácilConsig | segunda a sexta | 07:00 | 21:00 |
 | RF1 | segunda a sexta | 07:00 | 21:00 |
-| FENIX | segunda a sexta | 07:00 | 21:00 |
 | GRID | segunda a sexta | 07:00 | 21:00 |
-| EasyConsig | segunda a sexta | 07:00 | 21:00 |
 
 Regras de entrada na fila:
 
@@ -136,14 +225,16 @@ Regras de entrada na fila:
 
 | Plataforma | Prefeituras já mapeadas |
 |---|---|
-| RF1 | Boa Vista, pref2 |
-| EasyConsig | Chapecó |
-| SafeConsig | Fortaleza, Tamboril |
+| RF1 | Boa Vista |
+| SafeConsig | Fortaleza, Maranguape |
 | FácilConsig | Teresina, GOV AM, Paulista, Paulista Previdência, Mossoró |
 
-FENIX e GRID já seguem a regra de horário de 07:00–21:00 no scheduler, mas
-ainda precisam de suas respectivas prefeituras, credenciais e comandos no
-`.env`.
+GRID segue a regra de 07:00–21:00, mas ainda precisa ter sua prefeitura
+associada no cadastro. Consiglog/Itabuna e EasyConsig permanecem desativados
+até a integração dos respectivos runners ser validada.
+
+Itabuna é um robô separado (`Consiglog`) e não compartilha o runner RF1 de Boa
+Vista. Sua entrada permanece desativada até revalidarmos o portal alterado.
 
 ---
 
@@ -162,8 +253,6 @@ machine/
 │   └── utils.py          ← utilitários compartilhados (ex: aguardar ENTER sem corrupção de stdin)
 ├── rf1/
 │   └── rf1.py
-├── fenix/
-│   └── fenix.py
 ├── facil/
 │   └── facil.py
 └── grid/
@@ -182,7 +271,7 @@ python main.py <bot> [convenio] [--list]
 
 | Argumento    | Descrição                                              |
 |--------------|--------------------------------------------------------|
-| `bot`        | Qual bot executar: `rf1`, `fenix`, `facil` ou `grid`  |
+| `bot`        | Qual bot executar: `rf1`, `facil`, `safeconsig` ou `grid` |
 | `convenio`   | Qual convênio consultar (configurado no `.env`)        |
 | `--list`     | Lista os convênios disponíveis para o bot informado    |
 
@@ -195,7 +284,6 @@ python main.py facil --list
 
 # Executar um bot com convênio específico
 python main.py rf1 boavista
-python main.py fenix acre
 python main.py facil paulista
 python main.py grid roraima
 ```
@@ -227,7 +315,6 @@ Planilha `.xlsx` ou `.csv`. Colunas esperadas por bot:
 | Bot     | Colunas obrigatórias       |
 |---------|----------------------------|
 | `rf1`   | `CPF`                      |
-| `fenix` | `cpf`, `matricula`         |
 | `facil` | `cpf`, `matricula`         |
 | `grid`  | `cpf`                      |
 
@@ -281,14 +368,6 @@ RF1_{CONVENIO}_USUARIO=
 RF1_{CONVENIO}_SENHA=
 ```
 
-**`fenix`**
-```env
-FENIX_{CONVENIO}_URL_LOGIN=
-FENIX_{CONVENIO}_URL_CONSULTA=
-FENIX_{CONVENIO}_USUARIO=
-FENIX_{CONVENIO}_SENHA=
-```
-
 **`facil`**
 ```env
 FACIL_{CONVENIO}_URL=
@@ -311,7 +390,7 @@ GRID_{CONVENIO}_SENHA=
 
 ## Serviço de Captcha (2captcha)
 
-Os bots `rf1`, `fenix` e `facil` utilizam o serviço [2captcha](https://2captcha.com) para resolução automática de captchas no login e nas consultas. Configure a chave no `.env`:
+Os bots `rf1`, `facil` e `safeconsig` utilizam o serviço [2captcha](https://2captcha.com) para resolução automática de captchas. Configure a chave no `.env`:
 
 ```env
 TWOCAPTCHA_API_KEY=sua_chave_aqui
@@ -351,7 +430,8 @@ O registro com erro é salvo na planilha com o campo `erro` preenchido, e o bot 
 
 ## Observações
 
-- O bot `grid` usa **Microsoft Edge** por padrão e ainda exige **login manual**
-- Os bots `rf1`, `fenix` e `facil` fazem login **totalmente automatizado** via 2captcha
+- O bot `grid` usa Chromium por padrão, aceita `GRID_{CONVENIO}_BROWSER_CHANNEL`
+  opcional e ainda exige resolução manual do reCAPTCHA
+- Os bots `rf1` e `facil` fazem login automatizado via 2captcha
 - O arquivo `.env` contém credenciais — **não versione este arquivo**
 - Em caso de interrupção, o bot retoma de onde parou usando o arquivo em `temp/`

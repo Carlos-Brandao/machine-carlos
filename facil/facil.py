@@ -8,7 +8,6 @@ import traceback
 from pathlib import Path
 
 import pandas as pd
-import requests
 from dotenv import load_dotenv
 from playwright.async_api import Page, async_playwright
 
@@ -21,61 +20,16 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.captcha import resolve_captcha
+from services.telegram import TelegramNotifier
 from services.utils import aguardar_enter
 
 
-# --- TELEGRAM INTEGRATION ---
-
-def _send_telegram_message(message: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        print("[AVISO] Telegram Token ou Chat ID ausente no .env.")
-        return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        resp = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown"
-        }, timeout=10)
-        data = resp.json()
-        if not data.get("ok"):
-            print(f"[ERRO] Telegram recusou o envio: {data}")
-    except Exception as e:
-        print(f"[ERRO] Falha ao enviar mensagem no Telegram: {e}")
-
-
 async def send_telegram_message(message: str) -> None:
-    await asyncio.to_thread(_send_telegram_message, message)
-
-
-def _send_telegram_document(file_path: Path, caption: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        print("[AVISO] Telegram Token ou Chat ID ausente no .env.")
-        return
-    url = f"https://api.telegram.org/bot{token}/sendDocument"
-    try:
-        with open(file_path, "rb") as f:
-            resp = requests.post(url, data={
-                "chat_id": chat_id,
-                "caption": caption
-            }, files={
-                "document": f
-            }, timeout=45)
-        data = resp.json()
-        if data.get("ok"):
-            print(f"[TELEGRAM] Planilha {file_path.name} enviada com sucesso!")
-        else:
-            print(f"[ERRO] Falha no envio do Telegram: {data}")
-    except Exception as e:
-        print(f"[ERRO] Falha de rede ao enviar documento: {e}")
+    await asyncio.to_thread(TelegramNotifier.from_environment().message, message)
 
 
 async def send_telegram_document(file_path: Path, caption: str) -> None:
-    await asyncio.to_thread(_send_telegram_document, file_path, caption)
+    await asyncio.to_thread(TelegramNotifier.from_environment().document, file_path, caption)
 
 
 # --- REMOTE VNC/NGROK SESSION FALLBACK ---

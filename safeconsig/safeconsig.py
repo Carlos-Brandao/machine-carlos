@@ -10,6 +10,9 @@ from pathlib import Path
 import pandas as pd
 import requests
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
+from machine_admin.secret_store import get_runtime_secret
+from services.telegram import TelegramNotifier
+from services.utils import mask_cpf
 
 try:
     from pyngrok import ngrok
@@ -19,36 +22,11 @@ except ImportError:
 # --- TELEGRAM INTEGRATION ---
 
 def send_telegram_message(message: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        requests.post(url, json={
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown"
-        }, timeout=10)
-    except Exception as e:
-        print(f"[ERRO] Falha ao enviar Telegram: {e}")
+    TelegramNotifier.from_environment().message(message)
+
 
 def send_telegram_document(file_path: Path, caption: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        return
-    url = f"https://api.telegram.org/bot{token}/sendDocument"
-    try:
-        with open(file_path, "rb") as f:
-            requests.post(url, data={
-                "chat_id": chat_id,
-                "caption": caption
-            }, files={
-                "document": f
-            }, timeout=45)
-    except Exception as e:
-        print(f"[ERRO] Falha ao enviar documento Telegram: {e}")
+    TelegramNotifier.from_environment().document(file_path, caption)
 
 # --- REMOTE VNC/NGROK SESSION FALLBACK ---
 
@@ -317,7 +295,7 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                 sitekey = turnstile_container.get_attribute('data-sitekey')
                 print(f'[CAPTCHA] Turnstile detectado. Sitekey: {sitekey}')
                 
-                api_key = os.environ.get('TWOCAPTCHA_API_KEY')
+                api_key = get_runtime_secret("TWOCAPTCHA_API_KEY")
                 if api_key:
                     send_telegram_message("🔄 *Captcha detectado.* Resolvendo automaticamente...")
                     token = solve_turnstile(api_key, sitekey, page.url)
@@ -419,7 +397,8 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                 raw_cpf = str(cpf).strip().split('.')[0].split('-')[0]
                 cpf_padded = raw_cpf.zfill(11)
 
-                print(f'[{idx_cpf + 1}/{total_cpfs_to_process}] Pesquisando CPF: {cpf_padded}')
+                cpf_log = mask_cpf(cpf_padded)
+                print(f'[{idx_cpf + 1}/{total_cpfs_to_process}] Pesquisando CPF: {cpf_log}')
 
                 try:
                     results_emprestimo = {}
@@ -624,17 +603,17 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                         for col in colunas_extracao:
                             df.at[idx, col] = 'NÃO ENCONTRADO'
 
-                    print(f'[SUCESSO] CPF {cpf_padded} processado. Encontradas {len(results)} matrículas.')
+                    print(f'[SUCESSO] CPF {cpf_log} processado. Encontradas {len(results)} matrículas.')
 
                 except PlaywrightTimeoutError:
-                    print(f'[AVISO] CPF {cpf_padded} não encontrado (Timeout).')
+                    print(f'[AVISO] CPF {cpf_log} não encontrado (Timeout).')
                     indices = df[df['CPF'] == cpf].index.tolist()
                     for idx in indices:
                         for col in colunas_extracao:
                             df.at[idx, col] = 'NÃO ENCONTRADO'
                         
                 except Exception as e:
-                    print(f'[ERRO] Falha ao processar CPF {cpf_padded}: {e}')
+                    print(f'[ERRO] Falha ao processar CPF {cpf_log}: {e}')
                     indices = df[df['CPF'] == cpf].index.tolist()
                     for idx in indices:
                         for col in colunas_extracao:

@@ -1,67 +1,61 @@
-"""Política única de janelas para o scheduler dos robôs."""
+"""Regras puras de janela de execução por processadora.
+
+O executor consulta este módulo antes de iniciar um job. As regras usam o
+horário de Fortaleza e podem ser refinadas por processadora sem alterar a API.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from services.registry import MUNICIPALITIES, PLATFORMS, platform_for_municipality
 
-FORTALEZA_TZ = ZoneInfo("America/Fortaleza")
+
+TIMEZONE = ZoneInfo("America/Fortaleza")
 START_HOUR = 7
-
-PREFEITURAS_POR_PLATAFORMA = {
-    "rf1": {"boa-vista", "pref2"},
-    "easyconsig": {"chapeco"},
-    "safeconsig": {"fortaleza", "tamboril"},
-    "facil": {"teresina", "gov-am", "paulista", "paulista-previdencia", "mossoro"},
+START_HOUR_BY_PLATFORM = {
+    slug: platform.start_hour for slug, platform in PLATFORMS.items()
 }
-
-# A hora final é exclusiva: SafeConsig pode trabalhar até 17:59; as demais,
-# até 20:59. Todos só iniciam em dias úteis, a partir das 07:00.
 END_HOUR_BY_PLATFORM = {
-    "safeconsig": 18,
-    "facil": 21,
-    "rf1": 21,
-    "fenix": 21,
-    "grid": 21,
-    "easyconsig": 21,
+    slug: platform.end_hour for slug, platform in PLATFORMS.items()
+}
+PLATFORM_BY_PREFEITURA = {
+    slug: municipality.platform_slug
+    for slug, municipality in MUNICIPALITIES.items()
 }
 
 
 def platform_for(prefeitura: str) -> str:
-    for platform, prefeituras in PREFEITURAS_POR_PLATAFORMA.items():
-        if prefeitura in prefeituras:
-            return platform
-    raise ValueError(f"Prefeitura sem plataforma configurada: {prefeitura}")
+    return platform_for_municipality(prefeitura).slug
 
 
-def is_within_window(platform: str, now: datetime | None = None) -> bool:
-    local_now = _local_now(now)
-    return (
-        local_now.weekday() < 5
-        and START_HOUR <= local_now.hour < END_HOUR_BY_PLATFORM[platform]
+def is_within_window(platform: str, moment: datetime | None = None) -> bool:
+    moment = _local_moment(moment)
+    if moment.weekday() >= 5:
+        return False
+    end_hour = END_HOUR_BY_PLATFORM[platform]
+    return START_HOUR_BY_PLATFORM[platform] <= moment.hour < end_hour
+
+
+def next_start_time(platform: str, moment: datetime | None = None) -> datetime:
+    moment = _local_moment(moment)
+    if is_within_window(platform, moment):
+        return moment
+
+    candidate_day = moment.date()
+    if moment.hour >= END_HOUR_BY_PLATFORM[platform] or moment.weekday() >= 5:
+        candidate_day += timedelta(days=1)
+    while candidate_day.weekday() >= 5:
+        candidate_day += timedelta(days=1)
+    return datetime.combine(
+        candidate_day, time(START_HOUR_BY_PLATFORM[platform]), tzinfo=TIMEZONE
     )
 
 
-def next_start_time(platform: str, now: datetime | None = None) -> datetime:
-    """Retorna o instante permitido para o próximo início, no fuso Fortaleza."""
-    local_now = _local_now(now)
-    if is_within_window(platform, local_now):
-        return local_now
-
-    candidate_date = local_now.date()
-    if local_now.weekday() >= 5 or local_now.time() >= time(END_HOUR_BY_PLATFORM[platform]):
-        candidate_date += timedelta(days=1)
-
-    while candidate_date.weekday() >= 5:
-        candidate_date += timedelta(days=1)
-
-    return datetime.combine(candidate_date, time(START_HOUR), tzinfo=FORTALEZA_TZ)
-
-
-def _local_now(now: datetime | None) -> datetime:
-    if now is None:
-        return datetime.now(FORTALEZA_TZ)
-    if now.tzinfo is None:
-        return now.replace(tzinfo=FORTALEZA_TZ)
-    return now.astimezone(FORTALEZA_TZ)
+def _local_moment(moment: datetime | None) -> datetime:
+    if moment is None:
+        return datetime.now(TIMEZONE)
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=TIMEZONE)
+    return moment.astimezone(TIMEZONE)

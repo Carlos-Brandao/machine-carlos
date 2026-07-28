@@ -1,11 +1,7 @@
-"""Inicializa a API interna da fila de consultas."""
+"""Entrada compatível para o painel e a API unificados."""
 
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-from services.backend_api import serve
+from run_admin import main
 
 
-load_dotenv(Path(__file__).parent / ".env")
-serve()
+if __name__ == "__main__":
+    main()

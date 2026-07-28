@@ -1,6 +1,7 @@
 [Unit]
-Description=Machine backend API
-After=network.target
+Description=Machine Admin and API
+After=network-online.target postgresql.service
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -8,6 +9,7 @@ WorkingDirectory=/root/ROBO_FACIL
 ExecStart=/root/ROBO_FACIL/env/bin/python -u run_backend_api.py
 Restart=always
 RestartSec=5
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

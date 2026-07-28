@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title"><div><p class="eyebrow">Entrada</p><h1>Bases de consulta</h1></div></div>
+<section class="card"><h2>Importar base cifrada</h2><form method="post" enctype="multipart/form-data" class="form-grid">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <label>Convênio<select name="municipality_slug" required>{% for item in municipalities %}<option value="{{ item.slug }}">{{ item.name }}</option>{% endfor %}</select></label>
+  <label>Arquivo<input type="file" name="file" accept=".xlsx,.csv" required></label>
+  <label>Vincular a job aguardando<select name="waiting_job_id"><option value="">Nenhum</option>{% for job in waiting_jobs %}<option value="{{ job.id }}">#{{ job.id }} · {{ job.municipality_slug }}</option>{% endfor %}</select></label>
+  <label class="checkbox"><input type="checkbox" name="start_job" value="true"> Iniciar um novo job</label>
+  <button type="submit">Importar</button>
+</form></section>
+<section class="card"><h2>Bases recentes</h2><div class="table-wrap"><table><thead><tr><th>ID</th><th>Arquivo</th><th>Convênio</th><th>Linhas</th><th>Status</th><th>Data</th></tr></thead><tbody>
+{% for item in datasets %}<tr><td>#{{ item.id }}</td><td>{{ item.original_filename }}</td><td>{{ item.municipality_slug }}</td><td>{{ item.row_count }}</td><td><span class="status {{ item.status }}">{{ item.status }}</span></td><td>{{ item.created_at.strftime('%d/%m/%Y %H:%M') }}</td></tr>{% else %}<tr><td colspan="6" class="empty">Nenhuma base importada.</td></tr>{% endfor %}
+</tbody></table></div></section>
+{% endblock %}
