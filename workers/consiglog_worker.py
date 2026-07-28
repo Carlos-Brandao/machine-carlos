@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -84,5 +85,11 @@ class ConsiglogWorker(RF1Worker):
                 self._report_credential(credential_id, "transient_failure", str(exc)[:500])
                 return False
             finally:
-                context.close()
-                browser.close()
+                try:
+                    context.close()
+                except PlaywrightError:
+                    pass
+                try:
+                    browser.close()
+                except PlaywrightError:
+                    pass
