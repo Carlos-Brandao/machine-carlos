@@ -133,6 +133,7 @@ def _login(page: Page, login_url: str, usuario: str, senha: str) -> None:
             page.wait_for_timeout(2_000)
     for _ in range(5):
         current_url = page.url.lower()
+        _dismiss_modal(page)
         if _visible(page, "#txtSenha"):
             page.locator("#txtSenha").fill(senha)
             page.locator("#Entrar").click()
