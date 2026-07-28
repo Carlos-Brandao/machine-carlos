@@ -24,12 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from machine_admin.config import Settings
-from machine_admin.datasets import (
-    attach_dataset_to_job,
-    create_job_for_dataset,
-    delete_dataset_blob,
-    import_dataset,
-)
+from machine_admin.datasets import create_job_for_dataset, delete_dataset_blob, import_dataset
 from machine_admin.db import get_db, get_session_factory, get_settings
 from machine_admin.models import (
     AdminUser,
@@ -585,13 +580,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 .order_by(Municipality.name)
             )
         )
-        waiting_jobs = list(
-            session.scalars(
-                select(Job)
-                .where(Job.status == "awaiting_dataset")
-                .order_by(Job.created_at)
-            )
-        )
         return TEMPLATES.TemplateResponse(
             request=request,
             name="datasets.html",
@@ -600,7 +588,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user,
                 datasets=datasets,
                 municipalities=municipalities,
-                waiting_jobs=waiting_jobs,
             ),
         )
 
@@ -608,9 +595,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def upload_dataset(
         request: Request,
         municipality_slug: str = Form(...),
-        custom_columns: str = Form(""),
-        start_job: bool = Form(False),
-        waiting_job_id: int | None = Form(None),
         csrf: str = Form(...),
         file: UploadFile = File(...),
         session: Session = Depends(get_db),
@@ -629,15 +613,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 filename=file.filename or "base.xlsx",
                 payload=payload,
                 uploaded_by_id=user.id,
-                custom_columns=custom_columns,
             )
-            if waiting_job_id:
-                job = session.get(Job, waiting_job_id)
-                if not job:
-                    raise ValueError("Job aguardando base não encontrado.")
-                attach_dataset_to_job(session, job=job, dataset=dataset)
-            elif start_job:
-                create_job_for_dataset(session, dataset=dataset, requested_by_id=user.id)
             audit(
                 session,
                 actor_id=user.id,
@@ -648,7 +624,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details={
                     "rows": dataset.row_count,
                     "municipality": municipality_slug,
-                    "custom_columns": dataset.custom_columns,
                 },
             )
             session.commit()
@@ -664,6 +639,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             delete_dataset_blob(storage_path)
             request.session["flash"] = "A base conflita com um registro já existente."
         return RedirectResponse("/admin/datasets", status_code=303)
+
+    @app.post("/admin/datasets/{dataset_id}/jobs")
+    def create_dataset_job(
+        dataset_id: int,
+        request: Request,
+        csrf: str = Form(...),
+        session: Session = Depends(get_db),
+    ):
+        user = require_browser_user(request, session, write_access=True)
+        if isinstance(user, RedirectResponse):
+            return user
+        validate_csrf(request, csrf)
+        dataset = session.get(Dataset, dataset_id)
+        if not dataset or dataset.status != "ready":
+            request.session["flash"] = "Base não encontrada ou indisponível para consulta."
+            return RedirectResponse("/admin/datasets", status_code=303)
+        job = create_job_for_dataset(session, dataset=dataset, requested_by_id=user.id)
+        audit(
+            session,
+            actor_id=user.id,
+            action="job.created_from_dataset",
+            target_type="automation_job",
+            target_id=str(job.id),
+            ip_address=client_ip(request),
+            details={"dataset_id": dataset.id, "municipality": dataset.municipality_slug},
+        )
+        session.commit()
+        request.session["flash"] = f"Job #{job.id} criado a partir da base #{dataset.id}."
+        return RedirectResponse("/admin/jobs", status_code=303)
 
     @app.get("/admin/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, session: Session = Depends(get_db)):
@@ -685,6 +689,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         events = list(session.scalars(select(JobEvent).order_by(JobEvent.created_at.desc()).limit(300)))
         jobs = {job.id: job for job in session.scalars(select(Job).where(Job.id.in_([event.job_id for event in events])))}
         return TEMPLATES.TemplateResponse(request=request, name="logs.html", context=page_context(request, user, events=events, jobs=jobs))
+
+    def control_job(session: Session, job: Job, action: str) -> str:
+        if action == "pause":
+            if job.status not in {"queued", "running"}:
+                raise ValueError("Apenas jobs em fila ou execução podem ser pausados.")
+            session.execute(
+                update(JobItem)
+                .where(JobItem.job_id == job.id, JobItem.status == "leased")
+                .values(status="pending", credential_id=None, lease_owner=None, lease_expires_at=None)
+            )
+            session.execute(delete(CredentialLease).where(CredentialLease.job_id == job.id))
+            job.status = "paused"
+            message = "Job pausado pelo operador."
+        elif action == "cancel":
+            if job.status in {"completed", "cancelled"}:
+                raise ValueError("Este job não pode mais ser interrompido.")
+            session.execute(
+                update(JobItem)
+                .where(JobItem.job_id == job.id, JobItem.status.in_(["pending", "leased"]))
+                .values(status="cancelled", lease_owner=None, lease_expires_at=None)
+            )
+            session.execute(delete(CredentialLease).where(CredentialLease.job_id == job.id))
+            job.status = "cancelled"
+            job.cancelled_at = datetime.now(UTC)
+            job.finished_at = job.cancelled_at
+            message = "Job interrompido totalmente pelo operador."
+        elif action == "resume":
+            if job.status != "paused":
+                raise ValueError("Somente jobs pausados podem ser retomados.")
+            job.status = "queued"
+            job.cancelled_at = None
+            job.finished_at = None
+            message = "Job retomado pelo operador."
+        elif action == "retry":
+            if job.status not in {"failed", "cancelled", "paused"}:
+                raise ValueError("Tente novamente apenas jobs pausados, cancelados ou com falha.")
+            session.execute(
+                update(JobItem)
+                .where(JobItem.job_id == job.id, JobItem.status.in_(["failed", "cancelled", "leased"]))
+                .values(status="pending", credential_id=None, lease_owner=None, lease_expires_at=None, error_code=None, error_message=None, finished_at=None)
+            )
+            session.execute(delete(CredentialLease).where(CredentialLease.job_id == job.id))
+            job.status = "queued"
+            job.failed_items = 0
+            job.cancelled_at = None
+            job.finished_at = None
+            message = "Job reenfileirado para nova tentativa."
+        else:
+            raise ValueError("Ação de job inválida.")
+        session.add(JobEvent(job_id=job.id, event_type=f"job.{action}", message=message))
+        return message
+
+    @app.post("/admin/jobs/{job_id}/{action}")
+    def job_control(job_id: int, action: str, request: Request, csrf: str = Form(...), session: Session = Depends(get_db)):
+        user = require_browser_user(request, session, write_access=True)
+        if isinstance(user, RedirectResponse):
+            return user
+        validate_csrf(request, csrf)
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job não encontrado.")
+        try:
+            message = control_job(session, job, action)
+            audit(session, actor_id=user.id, action=f"job.{action}", target_type="automation_job", target_id=str(job.id), ip_address=client_ip(request))
+            session.commit()
+            request.session["flash"] = message
+        except ValueError as exc:
+            session.rollback()
+            request.session["flash"] = str(exc)
+        return RedirectResponse("/admin/jobs", status_code=303)
 
     @app.get("/admin/jobs/{job_id}/export.xlsx")
     def export_job(
