@@ -27,7 +27,9 @@ class MunicipalityDefinition:
 
 
 PLATFORMS: dict[str, PlatformDefinition] = {
-    "rf1": PlatformDefinition("rf1", "RF1", "rf1"),
+    # Boa Vista (RF1) está disponível 24/7; não deve ficar retido pela antiga
+    # janela comercial aplicada aos demais portais.
+    "rf1": PlatformDefinition("rf1", "RF1", "rf1", start_hour=0, end_hour=24),
     "facil": PlatformDefinition("facil", "FACILCONSIG", "facil"),
     "safeconsig": PlatformDefinition(
         "safeconsig", "SAFE", "safeconsig", end_hour=18
