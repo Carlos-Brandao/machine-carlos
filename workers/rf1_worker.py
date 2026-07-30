@@ -203,7 +203,13 @@ class RF1Worker:
             )
             result = _consultar(page, cpf)
         except PlaywrightTimeoutError:
-            result = {"Status_Robo": "Não Encontrado"}
+            # Um postback lento, ou uma resposta que não atualizou os labels,
+            # não comprova que o servidor não existe. Registrar como timeout
+            # permite repetir a consulta sem contaminar o resultado final.
+            status = "failed"
+            result = {"Status_Robo": "Timeout"}
+            error_code = "timeout"
+            error_message = "RF1 não confirmou a resposta da consulta no tempo limite."
         except Exception as exc:
             status = "failed"
             result = {"Status_Robo": "Erro"}
