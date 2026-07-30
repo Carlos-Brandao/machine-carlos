@@ -11,7 +11,15 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from rf1.rf1 import DEFAULT_LOGIN_URL, DEFAULT_QUERY_URL, LOGIN_PATH, RF1Error, _consultar, _login
+from rf1.rf1 import (
+    DEFAULT_LOGIN_URL,
+    DEFAULT_QUERY_URL,
+    LOGIN_PATH,
+    RF1Error,
+    _consultar,
+    _login,
+    _logout,
+)
 from services.scheduling import is_within_window
 from services.utils import mask_cpf
 from workers.api_client import WorkerAPIClient, WorkerAPIConflict, WorkerAPIError
@@ -165,6 +173,10 @@ class RF1Worker:
                         processed = True
                 return processed
             finally:
+                # O RF1 mantém a sessão ativa no servidor mesmo após o
+                # fechamento do Chromium. Sair explicitamente evita que o
+                # próximo worker seja bloqueado como "usuário já logado".
+                _logout(page)
                 context.close()
                 browser.close()
 

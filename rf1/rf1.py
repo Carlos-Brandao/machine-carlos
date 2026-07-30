@@ -6,6 +6,7 @@ import traceback
 from pathlib import Path
 
 import pandas as pd
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, sync_playwright, TimeoutError
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -109,15 +110,42 @@ def _login(
 
         page.fill(f"{_PFXL}txtValidaCaptcha", captcha)
         page.click(f"{_PFXL}btnEntrar")
-        page.wait_for_timeout(800)
-
-        if LOGIN_PATH.lower() not in page.url.lower():
+        try:
+            # O RF1 pode levar alguns segundos para concluir o postback e
+            # redirecionar. A espera fixa de 800 ms reiniciava logins válidos.
+            page.wait_for_function(
+                """loginPath => !window.location.pathname
+                    .toLowerCase().includes(loginPath)""",
+                arg=LOGIN_PATH.lower(),
+                timeout=12_000,
+            )
             print("  [login] OK")
             return True
+        except TimeoutError:
+            pass
 
         print(f"  [login] falhou (tentativa {tentativa})")
 
     return False
+
+
+def _logout(page: Page) -> bool:
+    """Encerra a sessão RF1 antes de fechar o navegador.
+
+    Fechar o Chromium não encerra a sessão no servidor RF1. Sem este passo o
+    próximo login pode ser recusado como ``usuário já logado``.
+    """
+    if page.is_closed():
+        return False
+    try:
+        sair = page.get_by_role("link", name="Sair", exact=True)
+        if sair.count() != 1:
+            return False
+        sair.click()
+        page.wait_for_selector(f"{_PFXL}txtUsuario", timeout=10_000)
+        return True
+    except (TimeoutError, PlaywrightError):
+        return False
 
 
 def _consultar(page: Page, cpf: str) -> dict:
