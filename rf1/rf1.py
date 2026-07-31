@@ -154,6 +154,22 @@ def _consultar(page: Page, cpf: str) -> dict:
         raise RF1Error("CPF inválido na planilha de entrada.")
     campo = f"{_PFXO}txtCPF"
     page.fill(campo, normalized_cpf)
+
+    # No RF1 de Boa Vista o órgão não pertence à sessão de login: ele é
+    # resolvido pelo postback disparado ao perder o foco do CPF. Clicar em
+    # "Consultar" com o cursor ainda no CPF faz a página pesquisar sem órgão
+    # (ou com o estado da consulta anterior). Reproduzimos o gesto humano:
+    # preencher CPF -> sair do campo -> aguardar a matrícula/órgão retornarem.
+    page.locator(f"{_PFXO}txtMatricula").click()
+    orgao = f"{_PFXO}cboOrgao"
+    page.wait_for_function(
+        """selector => {
+            const select = document.querySelector(selector);
+            return Boolean(select && select.options.length && select.value);
+        }""",
+        arg=orgao,
+        timeout=15_000,
+    )
     page.click(f"{_PFXO}btnListar")
 
     # O postback do WebForms é assíncrono. Um tempo fixo aqui permitia que a

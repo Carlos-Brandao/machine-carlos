@@ -136,17 +136,9 @@ class RF1Worker:
                 page.wait_for_selector(
                     "#ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_btnListar"
                 )
-                org_options = page.locator(
-                    "#ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_cboOrgao option"
-                )
-                if org_options.count() == 0:
-                    self._report_credential(
-                        credential_id,
-                        "invalid_credentials",
-                        "RF1 não disponibilizou nenhum Órgão para esta credencial. "
-                        "Vincule um órgão no portal antes de consultar.",
-                    )
-                    return True
+                # No RF1 o órgão é carregado somente depois que cada CPF perde
+                # foco. Portanto ele não pode ser validado aqui, antes da
+                # primeira consulta; _consultar aguarda esse postback.
                 processed = False
                 while not self.stop_event.is_set():
                     self.api.request(
