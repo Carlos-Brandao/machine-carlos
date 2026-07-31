@@ -131,6 +131,22 @@ class RF1Worker:
                     )
                     return True
                 self._report_credential(credential_id, "success")
+                if query_url not in page.url:
+                    page.goto(query_url, wait_until="domcontentloaded")
+                page.wait_for_selector(
+                    "#ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_btnListar"
+                )
+                org_options = page.locator(
+                    "#ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_cboOrgao option"
+                )
+                if org_options.count() == 0:
+                    self._report_credential(
+                        credential_id,
+                        "invalid_credentials",
+                        "RF1 não disponibilizou nenhum Órgão para esta credencial. "
+                        "Vincule um órgão no portal antes de consultar.",
+                    )
+                    return True
                 processed = False
                 while not self.stop_event.is_set():
                     self.api.request(
