@@ -191,7 +191,7 @@ class Job(TimestampMixin, Base):
     __tablename__ = "automation_jobs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('awaiting_dataset', 'queued', 'running', 'completed', 'failed', 'cancelled')",
+            "status IN ('awaiting_dataset', 'queued', 'running', 'paused', 'completed', 'failed', 'cancelled')",
             name="ck_automation_jobs_status",
         ),
         Index("ix_automation_jobs_queue", "status", "priority", "created_at"),
