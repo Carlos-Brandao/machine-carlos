@@ -236,10 +236,14 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(1500)
     await _fechar_modais(page)
-    await page.wait_for_selector("input[name='matricula']", timeout=15_000)
+    # Paulista exige matrícula + CPF, enquanto GOV AM disponibiliza apenas
+    # CPF + captcha. A presença do campo, e não o convênio, define o fluxo.
+    await page.wait_for_selector("input[name='cpf']", timeout=15_000)
+    has_matricula = await page.locator("input[name='matricula']").count() > 0
 
     for tentativa in range(1, 5):
-        await page.fill("input[name='matricula']", matricula)
+        if has_matricula:
+            await page.fill("input[name='matricula']", matricula)
         await page.fill("input[name='cpf']", cpf)
 
         if tentativa <= 3:
@@ -260,7 +264,7 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(1500)
         await _fechar_modais(page)
-        await page.wait_for_selector("input[name='matricula']", timeout=15_000)
+        await page.wait_for_selector("input[name='cpf']", timeout=15_000)
 
     return False
 

@@ -103,8 +103,6 @@ class FacilWorker(RF1Worker):
                     error_code = error_message = None
                     registration = str(item.get("registration") or "").strip()
                     try:
-                        if not registration:
-                            raise ValueError("Matrícula obrigatória para o FACILCONSIG.")
                         found = await _buscar(
                             page, base_url, registration, str(item["cpf"])
                         )
