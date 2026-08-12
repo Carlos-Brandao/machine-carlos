@@ -37,6 +37,10 @@ async def send_telegram_document(file_path: Path, caption: str) -> None:
 remote_processes = []
 
 
+class SearchFormUnavailable(RuntimeError):
+    """A sessão autenticada não apresentou o formulário de busca."""
+
+
 def _start_remote_session() -> str | None:
     """Inicia noVNC via websockify e ngrok."""
     if not ngrok:
@@ -232,22 +236,28 @@ async def _login(
 async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
     busca_url = f"{base_url}/controlador.php?pagina=busca_servidor_consignatario.php"
 
-    await page.goto(busca_url, wait_until="domcontentloaded", timeout=20000)
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(1500)
-    await _fechar_modais(page)
     # Paulista exige matrícula + CPF, enquanto GOV AM disponibiliza apenas
     # CPF + captcha. A presença do campo, e não o convênio, define o fluxo.
-    # Em respostas lentas o portal por vezes mantém uma tela incompleta; um
-    # reload preserva a sessão autenticada e é suficiente para recuperar o
-    # formulário, sem forçar um novo login.
-    try:
-        await page.wait_for_selector("input[name='cpf']", timeout=15_000)
-    except Exception:
-        await page.reload(wait_until="domcontentloaded", timeout=20000)
-        await page.wait_for_timeout(1500)
-        await _fechar_modais(page)
-        await page.wait_for_selector("input[name='cpf']", timeout=15_000)
+    # Tentamos a rota direta e um reload na mesma sessão. Se as duas ações
+    # não devolverem o campo, não continuamos consumindo CPFs em uma página
+    # quebrada: o worker fecha somente este navegador e reabre a sessão no
+    # próximo ciclo.
+    form_ready = False
+    for recovery in ("open", "reload"):
+        try:
+            if recovery == "open":
+                await page.goto(busca_url, wait_until="domcontentloaded", timeout=20_000)
+            else:
+                await page.reload(wait_until="domcontentloaded", timeout=20_000)
+            await page.wait_for_timeout(1_500)
+            await _fechar_modais(page)
+            await page.wait_for_selector("input[name='cpf']", timeout=15_000)
+            form_ready = True
+            break
+        except Exception:
+            continue
+    if not form_ready:
+        raise SearchFormUnavailable("O portal não exibiu o formulário CPF após abrir e recarregar.")
     has_matricula = await page.locator("input[name='matricula']").count() > 0
 
     for tentativa in range(1, 5):
@@ -270,17 +280,10 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
         if await page.locator("table.table-consig tbody tr td a").count() > 0:
             return True
 
-        await page.goto(busca_url, wait_until="domcontentloaded", timeout=20000)
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(1500)
+        await page.goto(busca_url, wait_until="domcontentloaded", timeout=20_000)
+        await page.wait_for_timeout(1_500)
         await _fechar_modais(page)
-        try:
-            await page.wait_for_selector("input[name='cpf']", timeout=15_000)
-        except Exception:
-            await page.reload(wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(1500)
-            await _fechar_modais(page)
-            await page.wait_for_selector("input[name='cpf']", timeout=15_000)
+        await page.wait_for_selector("input[name='cpf']", timeout=15_000)
 
     return False
 

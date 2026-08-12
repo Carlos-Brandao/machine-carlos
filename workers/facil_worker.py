@@ -9,7 +9,7 @@ import re
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-from facil.facil import _buscar, _extrair, _login
+from facil.facil import SearchFormUnavailable, _buscar, _extrair, _login
 from workers.api_client import WorkerAPIConflict, WorkerAPIError
 from workers.rf1_worker import LOG, RF1Worker
 
@@ -162,6 +162,11 @@ class FacilWorker(RF1Worker):
                         },
                     )
                     processed = True
+                    # A rota/reload da sessão não recuperou o formulário.
+                    # Fechamos este navegador uma vez e retomamos o lote no
+                    # próximo ciclo, sem repetir o mesmo timeout em massa.
+                    if error_code == "SearchFormUnavailable":
+                        return processed
                 return processed
             except WorkerAPIError as exc:
                 LOG.warning("Falha no worker FACILCONSIG: %s", exc)
