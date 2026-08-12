@@ -112,13 +112,31 @@ class FacilWorker(RF1Worker):
                             # o mesmo registro que foi solicitado. Isso evita
                             # salvar a ficha anterior em caso de resposta lenta
                             # ou seleção incorreta do portal.
-                            detail_text = await page.locator("#conteudo").inner_text()
-                            returned_digits = re.sub(r"\\D", "", detail_text)
-                            expected_cpf = re.sub(r"\\D", "", str(item["cpf"]))
-                            expected_registration = re.sub(r"\\D", "", registration)
-                            if expected_cpf not in returned_digits:
+                            expected_cpf = re.sub(r"\D", "", str(item["cpf"]))
+                            expected_registration = re.sub(r"\D", "", registration)
+                            returned_cpf = next(
+                                (
+                                    re.sub(r"\D", "", str(value))
+                                    for key, value in result.items()
+                                    if key.strip().lower().endswith("| cpf")
+                                ),
+                                "",
+                            )
+                            if returned_cpf != expected_cpf:
                                 raise ValueError("O portal retornou uma ficha sem o CPF solicitado.")
-                            if expected_registration and expected_registration not in returned_digits:
+                            returned_registration = next(
+                                (
+                                    re.sub(r"\D", "", str(value))
+                                    for key, value in result.items()
+                                    if "matrícula" in key.lower() or "matricula" in key.lower()
+                                ),
+                                "",
+                            )
+                            if (
+                                expected_registration
+                                and returned_registration
+                                and returned_registration != expected_registration
+                            ):
                                 raise ValueError("O portal retornou uma ficha sem a matrícula solicitada.")
                         else:
                             result = {"Status_Robo": "Não Encontrado"}
