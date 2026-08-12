@@ -50,3 +50,11 @@ class CompleteItemRequest(BaseModel):
     result_data: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = Field(default=None, max_length=80)
     error_message: str | None = Field(default=None, max_length=2000)
+
+
+class RequeueItemRequest(BaseModel):
+    """Devolve um item alugado quando a infraestrutura externa está indisponível."""
+
+    worker_id: str = Field(min_length=3, max_length=160)
+    item_id: int
+    reason: str = Field(min_length=1, max_length=500)

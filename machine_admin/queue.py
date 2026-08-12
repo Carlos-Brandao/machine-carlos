@@ -227,3 +227,30 @@ def complete_job_item(
     refresh_job_counters(session, item.job_id)
     session.flush()
     return item
+
+
+def requeue_job_item(
+    session: Session, *, worker_id: str, item_id: int, reason: str
+) -> JobItem:
+    """Retorna um lease à fila sem contaminar o resultado do job."""
+    item = session.scalar(
+        select(JobItem).where(JobItem.id == item_id).with_for_update()
+    )
+    if not item or item.status != "leased" or item.lease_owner != worker_id:
+        raise ValueError("Item não pertence a este worker ou o lease expirou.")
+    item.status = "pending"
+    item.credential_id = None
+    item.lease_owner = None
+    item.lease_expires_at = None
+    item.error_code = None
+    item.error_message = None
+    session.add(
+        JobEvent(
+            job_id=item.job_id,
+            event_type="consulta.reenfileirada",
+            message=reason[:500],
+            event_data={"item_id": item.id},
+        )
+    )
+    session.flush()
+    return item

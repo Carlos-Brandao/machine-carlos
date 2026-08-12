@@ -10,6 +10,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from facil.facil import SearchFormUnavailable, _buscar, _extrair, _login
+from services.captcha import CaptchaError
 from workers.api_client import WorkerAPIConflict, WorkerAPIError
 from workers.rf1_worker import LOG, RF1Worker
 
@@ -140,6 +141,25 @@ class FacilWorker(RF1Worker):
                                 raise ValueError("O portal retornou uma ficha sem a matrícula solicitada.")
                         else:
                             result = {"Status_Robo": "Não Encontrado"}
+                    except CaptchaError as exc:
+                        # Sem saldo/configuração do resolvedor não é falha do
+                        # CPF. Devolve o item à fila e interrompe este ciclo.
+                        message = str(exc)[:500]
+                        self.api.request(
+                            "POST",
+                            "/api/workers/items/requeue",
+                            json={
+                                "worker_id": self.worker_id,
+                                "item_id": int(item["item_id"]),
+                                "reason": f"Captcha indisponível: {message}",
+                            },
+                        )
+                        self._report_credential(
+                            credential_id,
+                            "portal_unavailable",
+                            f"2Captcha indisponível: {message}",
+                        )
+                        return processed
                     except PlaywrightTimeoutError as exc:
                         item_status = "failed"
                         result = {"Status_Robo": "Timeout"}

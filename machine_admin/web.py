@@ -47,6 +47,7 @@ from machine_admin.queue import (
     complete_job_item,
     create_waiting_job,
     heartbeat_credential,
+    requeue_job_item,
     release_credential,
 )
 from machine_admin.schemas import (
@@ -55,6 +56,7 @@ from machine_admin.schemas import (
     ClaimItemsRequest,
     CompleteItemRequest,
     CredentialReportRequest,
+    RequeueItemRequest,
     WorkerRequest,
 )
 from machine_admin.security import SecretCipher, hash_api_token
@@ -1271,6 +1273,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     else "Telegram não configurado ou envio recusado."
                 )
             session.commit()
+        return {"ok": True, "item_id": item.id, "status": item.status}
+
+    @app.post("/api/workers/items/requeue")
+    def worker_requeue_item(
+        payload: RequeueItemRequest,
+        _: ApiPrincipal = Depends(require_scope("workers:execute")),
+        session: Session = Depends(get_db),
+    ):
+        try:
+            item = requeue_job_item(
+                session,
+                worker_id=payload.worker_id,
+                item_id=payload.item_id,
+                reason=payload.reason,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True, "item_id": item.id, "status": item.status}
 
     return app
