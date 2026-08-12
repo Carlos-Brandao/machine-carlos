@@ -238,19 +238,29 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
     await _fechar_modais(page)
     # Paulista exige matrícula + CPF, enquanto GOV AM disponibiliza apenas
     # CPF + captcha. A presença do campo, e não o convênio, define o fluxo.
-    await page.wait_for_selector("input[name='cpf']", timeout=15_000)
+    # Em respostas lentas o portal por vezes mantém uma tela incompleta; um
+    # reload preserva a sessão autenticada e é suficiente para recuperar o
+    # formulário, sem forçar um novo login.
+    try:
+        await page.wait_for_selector("input[name='cpf']", timeout=15_000)
+    except Exception:
+        await page.reload(wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_timeout(1500)
+        await _fechar_modais(page)
+        await page.wait_for_selector("input[name='cpf']", timeout=15_000)
     has_matricula = await page.locator("input[name='matricula']").count() > 0
 
     for tentativa in range(1, 5):
         if has_matricula:
             await page.fill("input[name='matricula']", matricula)
         await page.fill("input[name='cpf']", cpf)
+        # Reproduz o fluxo humano: o portal pode disparar validações quando
+        # o CPF perde foco. O campo de captcha é neutro e mantém a sessão.
+        await page.locator("input[name='captcha']").click()
+        await page.wait_for_timeout(250)
 
-        if tentativa <= 3:
-            captcha = await resolve_captcha(page, base_url)
-            print(f"  tentativa {tentativa}: '{captcha}'")
-        else:
-            captcha = (await asyncio.to_thread(input, "  captcha manual: ")).strip()
+        captcha = await resolve_captcha(page, base_url)
+        print(f"  tentativa {tentativa}: '{captcha}'")
 
         await page.fill("input[name='captcha']", captcha)
         await page.click("input[type='submit'][value='Pesquisar']")
@@ -264,7 +274,13 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(1500)
         await _fechar_modais(page)
-        await page.wait_for_selector("input[name='cpf']", timeout=15_000)
+        try:
+            await page.wait_for_selector("input[name='cpf']", timeout=15_000)
+        except Exception:
+            await page.reload(wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(1500)
+            await _fechar_modais(page)
+            await page.wait_for_selector("input[name='cpf']", timeout=15_000)
 
     return False
 
