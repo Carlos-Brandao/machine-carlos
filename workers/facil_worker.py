@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
@@ -41,6 +42,10 @@ class FacilWorker(RF1Worker):
         self, job_id: int, credential_id: int, credential: dict[str, object]
     ) -> bool:
         base_url = str(credential.get("login_url") or "").rstrip("/")
+        # A URL que o portal divulga costuma terminar em index_servidor.php,
+        # mas as rotas internas (controlador.php) ficam na pasta do convênio.
+        if base_url.lower().endswith("/index_servidor.php"):
+            base_url = base_url.rsplit("/", 1)[0]
         if not base_url:
             self._report_credential(
                 credential_id, "transient_failure", "URL FACILCONSIG não configurada."
@@ -103,11 +108,22 @@ class FacilWorker(RF1Worker):
                         found = await _buscar(
                             page, base_url, registration, str(item["cpf"])
                         )
-                        result = (
-                            await _extrair(page)
-                            if found
-                            else {"Status_Robo": "Não Encontrado"}
-                        )
+                        if found:
+                            result = await _extrair(page)
+                            # Não aceite uma ficha cujo identificador não seja
+                            # o mesmo registro que foi solicitado. Isso evita
+                            # salvar a ficha anterior em caso de resposta lenta
+                            # ou seleção incorreta do portal.
+                            detail_text = await page.locator("#conteudo").inner_text()
+                            returned_digits = re.sub(r"\\D", "", detail_text)
+                            expected_cpf = re.sub(r"\\D", "", str(item["cpf"]))
+                            expected_registration = re.sub(r"\\D", "", registration)
+                            if expected_cpf not in returned_digits:
+                                raise ValueError("O portal retornou uma ficha sem o CPF solicitado.")
+                            if expected_registration and expected_registration not in returned_digits:
+                                raise ValueError("O portal retornou uma ficha sem a matrícula solicitada.")
+                        else:
+                            result = {"Status_Robo": "Não Encontrado"}
                     except PlaywrightTimeoutError as exc:
                         item_status = "failed"
                         result = {"Status_Robo": "Timeout"}
