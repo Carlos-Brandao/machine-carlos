@@ -121,6 +121,13 @@ class RF1PostbackTests(unittest.TestCase):
         self.assertLess(blur_index, wait_index)
         self.assertEqual(f"{_PFXO}txtMatricula", page.events[blur_index][1])
 
+    def test_blank_registration_does_not_block_confirmed_organ_postback(self) -> None:
+        """A matrícula pode aparecer somente na ficha após Consultar."""
+
+        self.assertNotIn("!currentMatricula || !currentOrgao", _CPF_DEPENDENCIES_READY)
+        self.assertIn("currentCpf !== expectedCpf || !currentOrgao", _CPF_DEPENDENCIES_READY)
+        self.assertIn("inputWasReplaced", _CPF_DEPENDENCIES_READY)
+
     def test_timeout_reloads_once_and_repeats_the_human_flow(self) -> None:
         timeout = PlaywrightTimeoutError("postback travado")
         page = _FakePage(

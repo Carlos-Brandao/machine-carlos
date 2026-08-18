@@ -55,7 +55,10 @@ _CPF_DEPENDENCIES_READY = r"""([cpfSelector, matriculaSelector, orgaoSelector,
     const currentCpf = (cpf.value || '').replace(/\D/g, '');
     const currentMatricula = (matricula.value || '').trim();
     const currentOrgao = (orgao.value || '').trim();
-    if (currentCpf !== expectedCpf || !currentMatricula || !currentOrgao) {
+    // O RF1 nem sempre preenche txtMatricula nesta etapa. Em alguns vínculos
+    // a matrícula aparece somente na ficha depois de clicar em Consultar. O
+    // órgão, por outro lado, é a dependência obrigatória resolvida pelo blur.
+    if (currentCpf !== expectedCpf || !currentOrgao) {
         return false;
     }
 
