@@ -83,14 +83,27 @@ class Settings:
             telegram_token=token,
             allowed_user_ids=user_ids,
             backend_url=backend_url or None,
-            backend_token=get_runtime_secret("BACKEND_API_TOKEN") or None,
+            # Este é o token bootstrap usado para autenticar no backend, não
+            # um segredo operacional distribuído pelo próprio endpoint.
+            backend_token=(
+                os.getenv("TELEGRAM_BACKEND_API_TOKEN", "").strip()
+                or os.getenv("BACKEND_API_TOKEN", "").strip()
+                or None
+            ),
         )
 
 
 @dataclass
 class Selection:
-    selected: list[str] = field(default_factory=list)
+    datasets: list[dict[str, Any]] = field(default_factory=list)
+    selected: list[int] = field(default_factory=list)
     updated_at: float = field(default_factory=time.monotonic)
+
+    def option(self, dataset_id: int) -> dict[str, Any] | None:
+        return next(
+            (item for item in self.datasets if int(item.get("id", 0)) == dataset_id),
+            None,
+        )
 
 
 class BackendClient:
@@ -101,12 +114,17 @@ class BackendClient:
         if settings.backend_token:
             self.session.headers["Authorization"] = f"Bearer {settings.backend_token}"
 
-    def create_batch(self, prefeturas: list[str], telegram_user_id: int, chat_id: int) -> Any:
+    def ready_datasets(self) -> Any:
+        return self._request("GET", "/api/datasets/ready")
+
+    def create_batch(
+        self, selections: list[dict[str, object]], telegram_user_id: int, chat_id: int
+    ) -> Any:
         return self._request(
             "POST",
             "/api/jobs/batch",
             json={
-                "prefeituras": prefeturas,
+                "jobs": selections,
                 "requested_by": {
                     "telegram_user_id": telegram_user_id,
                     "telegram_chat_id": chat_id,
@@ -227,16 +245,30 @@ class TelegramBot:
             self._answer_callback(callback_id)
             return
 
-        if action.startswith("select:"):
-            slug = action.removeprefix("select:")
-            if slug not in PREFEITURAS_POR_SLUG:
+        if action.startswith("select-dataset:"):
+            try:
+                dataset_id = int(action.removeprefix("select-dataset:"))
+            except ValueError:
                 self._answer_callback(callback_id, "Opção inválida.", alert=True)
                 return
             selection = self._selection(chat_id, user_id)
-            if slug in selection.selected:
-                selection.selected.remove(slug)
+            option = selection.option(dataset_id)
+            if not option:
+                self._answer_callback(
+                    callback_id, "Esta seleção expirou. Use /iniciar novamente.", alert=True
+                )
+                return
+            if dataset_id in selection.selected:
+                selection.selected.remove(dataset_id)
             else:
-                selection.selected.append(slug)
+                municipality_slug = str(option.get("municipality_slug", ""))
+                selection.selected = [
+                    selected_id
+                    for selected_id in selection.selected
+                    if str((selection.option(selected_id) or {}).get("municipality_slug", ""))
+                    != municipality_slug
+                ]
+                selection.selected.append(dataset_id)
             selection.updated_at = time.monotonic()
             self._edit_selection(callback["message"], selection)
             self._answer_callback(callback_id)
@@ -257,10 +289,21 @@ class TelegramBot:
         if action == "selection:confirm":
             selection = self._selection(chat_id, user_id)
             if not selection.selected:
-                self._answer_callback(callback_id, "Selecione ao menos uma prefeitura.", alert=True)
+                self._answer_callback(callback_id, "Selecione ao menos uma base.", alert=True)
                 return
+            selected_options = [
+                selection.option(dataset_id) for dataset_id in selection.selected
+            ]
+            jobs = [
+                {
+                    "municipality_slug": str(option["municipality_slug"]),
+                    "dataset_id": int(option["id"]),
+                }
+                for option in selected_options
+                if option
+            ]
             try:
-                result = self.backend.create_batch(selection.selected, user_id, chat_id)
+                result = self.backend.create_batch(jobs, user_id, chat_id)
             except RuntimeError:
                 self._answer_callback(callback_id, "Backend indisponível. Tente novamente.", alert=True)
                 return
@@ -268,13 +311,19 @@ class TelegramBot:
             self.selections.pop((chat_id, user_id), None)
             self._answer_callback(callback_id, "Bases enviadas ao backend.")
             self._delete_message(chat_id, callback["message"]["message_id"])
-            nomes = ", ".join(PREFEITURAS_POR_SLUG[slug] for slug in selection.selected)
+            nomes = ", ".join(
+                f"{option.get('municipality_name')} · {option.get('name')}"
+                for option in selected_options
+                if option
+            )
             created = result.get("created", []) if isinstance(result, dict) else []
+            skipped = result.get("skipped", []) if isinstance(result, dict) else []
             self._send(
                 chat_id,
                 "🚀 INICIANDO CONSULTAS\n\n"
                 f"Bases enviadas: {nomes}\n"
-                f"Jobs adicionados à fila: {len(created)}",
+                f"Jobs adicionados à fila: {len(created)}"
+                + (f"\nNão iniciados: {len(skipped)}" if skipped else ""),
             )
             return
 
@@ -313,7 +362,19 @@ class TelegramBot:
             return
 
     def _start_selection(self, chat_id: int, user_id: int) -> None:
-        selection = Selection()
+        try:
+            result = self.backend.ready_datasets()
+        except RuntimeError:
+            self._send(chat_id, "⚠️ Backend indisponível. Tente novamente em instantes.")
+            return
+        datasets = result.get("datasets", []) if isinstance(result, dict) else []
+        if not datasets:
+            self._send(
+                chat_id,
+                "Nenhuma base está pronta para execução. Consulte o painel para ver o bloqueio.",
+            )
+            return
+        selection = Selection(datasets=list(datasets))
         self.selections[(chat_id, user_id)] = selection
         self._send(chat_id, self._selection_text(selection), self._selection_keyboard(selection))
 
@@ -327,18 +388,35 @@ class TelegramBot:
 
     def _selection_text(self, selection: Selection) -> str:
         return (
-            "Escolha as bases que deseja consultar. Você pode marcar várias e "
+            "Escolha uma base pronta por convênio. Você pode marcar vários convênios e "
             "confirmar quando terminar.\n\n"
             f"Selecionadas: {len(selection.selected)}"
         )
 
     def _selection_keyboard(self, selection: Selection) -> dict[str, Any]:
         rows: list[list[dict[str, str]]] = []
-        for system, items in PREFEITURAS:
-            rows.append([{"text": f"— {system} —", "callback_data": "selection:noop"}])
-            for slug, nome in items:
-                icon = "✅" if slug in selection.selected else "☐"
-                rows.append([{"text": f"{icon} {nome}", "callback_data": f"select:{slug}"}])
+        current_processor = None
+        for option in selection.datasets:
+            processor = str(option.get("processor") or "Outros")
+            if processor != current_processor:
+                current_processor = processor
+                rows.append(
+                    [{"text": f"— {processor} —", "callback_data": "selection:noop"}]
+                )
+            dataset_id = int(option["id"])
+            icon = "✅" if dataset_id in selection.selected else "☐"
+            label = (
+                f"{icon} {option.get('municipality_name')} · "
+                f"{option.get('name')} ({option.get('rows', 0)})"
+            )
+            rows.append(
+                [
+                    {
+                        "text": label[:64],
+                        "callback_data": f"select-dataset:{dataset_id}",
+                    }
+                ]
+            )
         rows.extend(
             [
                 [{"text": f"✅ Confirmar ({len(selection.selected)})", "callback_data": "selection:confirm"}],

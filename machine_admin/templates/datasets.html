@@ -1,13 +1,45 @@
 {% extends "base.html" %}
+{% from "_ui.html" import status_badge %}
+{% block title %}Bases · Central de Robôs{% endblock %}
 {% block content %}
-<div class="page-title"><div><p class="eyebrow">Entrada</p><h1>Bases de consulta</h1></div></div>
-<section class="card"><h2>Importar base cifrada</h2><p class="muted">A base fica vinculada ao convênio escolhido e pode ser reutilizada em novos jobs. Formato obrigatório: primeira coluna <strong>CPF</strong>. A segunda coluna pode ser <strong>MATRICULA</strong>.</p><form method="post" enctype="multipart/form-data" class="form-grid">
-  <input type="hidden" name="csrf" value="{{ csrf_token }}">
-  <label>Convênio<select name="municipality_slug" required>{% for item in municipalities %}<option value="{{ item.slug }}">{{ item.name }}</option>{% endfor %}</select></label>
-  <label>Arquivo<input type="file" name="file" accept=".xlsx,.csv" required></label>
-  <button type="submit">Importar</button>
-</form></section>
-<section class="card"><h2>Bases recentes</h2><div class="table-wrap"><table><thead><tr><th>ID</th><th>Arquivo</th><th>Convênio</th><th>Linhas</th><th>Status</th><th>Data</th><th>Ações</th></tr></thead><tbody>
-{% for item in datasets %}<tr><td>#{{ item.id }}</td><td>{{ item.original_filename }}{% if item.error_message %}<br><small class="muted">{{ item.error_message }}</small>{% endif %}</td><td>{{ item.municipality_slug }}</td><td>{{ item.row_count }}</td><td><span class="status {{ item.status }}">{{ item.status }}</span></td><td>{{ item.created_at.strftime('%d/%m/%Y %H:%M') }}</td><td>{% if item.status == 'ready' %}<form method="post" action="/admin/datasets/{{ item.id }}/jobs"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small">Iniciar job</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="7" class="empty">Nenhuma base importada.</td></tr>{% endfor %}
-</tbody></table></div></section>
+<div class="page-title"><div><p class="eyebrow">Entrada de dados</p><h1>Bases de consulta</h1><p class="lead">Cada base pertence a um convênio e pode ser reutilizada em novas execuções.</p></div></div>
+
+<section class="help-grid" aria-label="Regras de importação">
+  <article><span class="help-number">1</span><div><strong>CPF é obrigatório e validado</strong><p>A primeira coluna deve se chamar <code>CPF</code>. O sistema completa zeros à esquerda e valida os dígitos verificadores.</p></div></article>
+  <article><span class="help-number">2</span><div><strong>Matrícula depende do convênio</strong><p>Quando exigida, deve ser a segunda coluna com o nome <code>MATRICULA</code>. A regra escolhida aparece em “Robôs e regras”.</p></div></article>
+  <article class="warning"><span class="help-number">!</span><div><strong>Duplicatas têm política explícita</strong><p>Escolha manter a primeira, manter todas ou rejeitar a base. A chave usada pelo convênio é CPF ou CPF + matrícula.</p></div></article>
+</section>
+
+{% if user.role in ['admin', 'operator'] %}
+<section class="card">
+  <div class="section-title"><div><h2>Importar nova base</h2><p class="muted">Formatos aceitos: XLSX e CSV.</p></div></div>
+  <form method="post" enctype="multipart/form-data" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>Convênio<span class="field-help">Define formato e destino</span><select name="municipality_slug" required>{% for item in municipalities %}<option value="{{ item.slug }}">{{ item.name }} · {{ item.platform.name if item.platform else item.platform_slug }}{% if 'registration' in (item.input_schema or {}).get('required', []) %} · matrícula obrigatória{% endif %}</option>{% endfor %}</select></label>
+    <label>Nome da base<span class="field-help">Opcional; facilita a reutilização</span><input name="display_name" maxlength="160" placeholder="Ex.: Folha de agosto"></label>
+    <label>Duplicatas<span class="field-help">Aplicada durante a importação</span><select name="duplicate_policy"><option value="keep_first">Manter a primeira</option><option value="keep_all">Manter todas</option><option value="reject">Rejeitar a base</option></select></label>
+    <label>Arquivo<span class="field-help">Limite definido pelo servidor</span><input type="file" name="file" accept=".xlsx,.csv" required></label>
+    <button type="submit">Validar e importar</button>
+  </form>
+</section>
+{% else %}
+<div class="notice"><strong>Perfil somente leitura</strong><span>Você pode consultar as bases, mas apenas operadores e administradores podem importar ou iniciar execuções.</span></div>
+{% endif %}
+
+<section class="card">
+  <div class="section-title"><div><h2>Bases disponíveis</h2><p class="muted" data-filter-count="datasets"></p></div></div>
+  <div class="filters" role="search">
+    <label>Buscar<input type="search" placeholder="Arquivo, convênio ou ID" data-filter-target="datasets" data-filter-field="text"></label>
+    <label>Estado<select data-filter-target="datasets" data-filter-field="status"><option value="">Todos</option><option value="ready">Pronta</option><option value="uploading">Importando</option><option value="invalid">Inválida</option><option value="archived">Arquivada</option></select></label>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>ID</th><th>Arquivo</th><th>Convênio</th><th>Registros válidos</th><th>Estado</th><th>Importada em</th><th>Ação</th></tr></thead><tbody>
+  {% for item in datasets %}
+    <tr data-filter-row="datasets" data-text="#{{ item.id }} {{ item.display_name|default('', true) }} {{ item.original_filename }} {{ item.municipality_slug }}" data-status="{{ item.status }}">
+      <td>#{{ item.id }}</td><td><strong>{{ item.display_name|default(item.original_filename, true) }}</strong>{% if item.display_name is defined and item.display_name and item.display_name != item.original_filename %}<small class="cell-note">{{ item.original_filename }}</small>{% endif %}{% if item.duplicate_policy is defined %}<small class="cell-note">Duplicatas: {{ {'keep_first': 'manter primeira', 'keep_all': 'manter todas', 'reject': 'rejeitar base'}.get(item.duplicate_policy, item.duplicate_policy) }}</small>{% endif %}{% if item.error_message %}<div class="inline-warning">{{ item.error_message }}</div>{% endif %}</td><td>{{ item.municipality_slug }}</td><td>{{ item.row_count }}</td><td>{{ status_badge(item.status) }}</td><td>{{ item.created_at.strftime('%d/%m/%Y %H:%M') }}</td>
+      <td>{% if item.status == 'ready' and user.role in ['admin', 'operator'] %}<form method="post" action="/admin/datasets/{{ item.id }}/jobs" data-confirm="Iniciar uma nova execução com todos os {{ item.row_count }} registros válidos desta base?"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small">Iniciar execução</button></form>{% elif item.status == 'ready' %}<span class="muted">Somente leitura</span>{% else %}<span class="muted">Indisponível</span>{% endif %}</td>
+    </tr>
+  {% else %}<tr><td colspan="7"><div class="empty-state"><strong>Nenhuma base importada</strong><p>Comece por uma planilha com CPF na primeira coluna.</p></div></td></tr>{% endfor %}
+  <tr class="filter-empty" data-filter-empty="datasets" hidden><td colspan="7"><div class="empty-state"><strong>Nenhuma base corresponde aos filtros</strong><p>Limpe ou altere a busca.</p></div></td></tr>
+  </tbody></table></div>
+</section>
 {% endblock %}

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "_ui.html" import status_badge %}
+{% block title %}Robôs e regras · Central de Robôs{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <p class="eyebrow">Configuração operacional</p>
+    <h1>Robôs e regras</h1>
+    <p class="lead">A processadora define o tipo de portal. O convênio define credenciais, entrada, agenda e concorrência. Estas regras são a fonte única usada pelo backend.</p>
+  </div>
+</div>
+
+<section class="help-grid" aria-label="Como a execução é decidida">
+  <article><span class="help-number">1</span><div><strong>Prontidão antes da fila</strong><p>Uma execução só inicia com adaptador homologado, URLs, integração, acesso válido e worker online.</p></div></article>
+  <article><span class="help-number">2</span><div><strong>Agenda no backend</strong><p>Dias e horários são avaliados aqui. O worker não possui uma segunda regra escondida.</p></div></article>
+  <article><span class="help-number">3</span><div><strong>Concorrência real</strong><p>O limite do convênio é combinado com a quantidade de acessos e workers disponíveis.</p></div></article>
+</section>
+
+<section class="card">
+  <div class="section-title"><div><h2>Processadoras</h2><p class="muted">A janela padrão é herdada por convênios que deixam início ou fim em branco.</p></div></div>
+  <div class="processor-grid">
+    {% for platform in platforms %}
+    <article class="rule-panel">
+      <div class="rule-heading">
+        <div><strong>{{ platform.name }}</strong><small>{{ platform.slug }} · executor {{ platform.runner }}</small></div>
+        {% if adapter_states.get(platform.slug) %}<span class="status ready">Adaptador homologado</span>{% else %}<span class="status blocked">Sem adaptador</span>{% endif %}
+      </div>
+      {% if user.role == 'admin' %}
+      <form method="post" action="/admin/processors/{{ platform.slug }}" class="form-grid rule-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label>Nome<input name="name" value="{{ platform.name }}" required></label>
+        <label>Início padrão<input type="number" name="start_hour" min="0" max="23" value="{{ platform.start_hour }}" required></label>
+        <label>Fim padrão<input type="number" name="end_hour" min="1" max="24" value="{{ platform.end_hour }}" required></label>
+        <label class="checkbox-field"><input type="checkbox" name="enabled" {% if platform.enabled %}checked{% endif %}> Processadora ativa</label>
+        <button class="small" type="submit">Salvar processadora</button>
+      </form>
+      {% else %}
+      <p class="muted">Janela padrão: {{ platform.start_hour }}h–{{ platform.end_hour }}h · {{ 'ativa' if platform.enabled else 'desativada' }}</p>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+{% if user.role == 'admin' %}
+<section class="card">
+  <div class="section-title"><div><h2>Novo convênio</h2><p class="muted">Ele nasce como Rascunho e não recebe jobs até completar o checklist.</p></div></div>
+  <form method="post" action="/admin/agreements" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>Nome<input name="name" placeholder="Ex.: Prefeitura de Exemplo" required></label>
+    <label>Identificador<input name="slug" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="prefeitura-exemplo" required><span class="field-help">Não muda depois da criação.</span></label>
+    <label>Processadora<select name="platform_slug" required>{% for platform in platforms %}<option value="{{ platform.slug }}">{{ platform.name }}</option>{% endfor %}</select></label>
+    <button type="submit">Criar rascunho</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="section-title"><div><h2>Convênios</h2><p class="muted">Abra um convênio para entender por que ele pode ou não executar.</p></div></div>
+  <div class="agreement-list">
+  {% for item in municipalities %}
+    {% set report = reports.get(item.slug, {}) %}
+    {% set schedule = schedules.get(item.slug, {}) %}
+    {% set schema = item.input_schema or {} %}
+    {% set policy = item.schedule_policy or {} %}
+    <details class="agreement-panel" {% if not report.can_start %}data-attention="true"{% endif %}>
+      <summary>
+        <span><strong>{{ item.name }}</strong><small>{{ item.platform.name if item.platform else item.platform_slug }} · {{ item.slug }}</small></span>
+        <span class="agreement-summary-state">{{ status_badge(item.operational_status) }} <span class="status {{ 'ready' if report.can_start else 'blocked' }}">{{ 'Pode executar' if report.can_start else 'Bloqueado' }}</span></span>
+      </summary>
+      <div class="agreement-body">
+        <div class="readiness-explainer {{ 'ready' if report.can_start else 'blocked' }}">
+          <strong>{{ report.summary }}</strong>
+          {% if report.issues %}
+          <ul>{% for issue in report.issues %}<li><span>{{ issue.message }}</span><small>{{ issue.action }}</small></li>{% endfor %}</ul>
+          {% else %}<p>Checklist completo. {{ report.active_credentials }} acesso(s) e {{ report.online_workers }} worker(s) detectado(s).</p>{% endif %}
+        </div>
+
+        {% if user.role == 'admin' %}
+        <form method="post" action="/admin/agreements/{{ item.slug }}" class="agreement-form">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <fieldset><legend>Identidade e estado</legend>
+            <label>Nome<input name="name" value="{{ item.name }}" required></label>
+            <label>Estado operacional<select name="operational_status">
+              {% for value, label in [('draft','Rascunho'),('testing','Em homologação'),('ready','Pronto'),('degraded','Degradado'),('paused','Pausado'),('retired','Encerrado')] %}<option value="{{ value }}" {% if item.operational_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select><span class="field-help">“Pronto” exige checklist completo.</span></label>
+            <label class="checkbox-field"><input type="checkbox" name="enabled" {% if item.enabled %}checked{% endif %}> Convênio ativo</label>
+            <label>Versão do adaptador<input name="adapter_version" value="{{ item.adapter_version or '' }}" placeholder="ex.: facil.v1"></label>
+          </fieldset>
+          <fieldset><legend>Portal</legend>
+            <label>URL de login<input type="url" name="login_url" value="{{ item.login_url or '' }}" placeholder="https://..."></label>
+            <label>URL de consulta<input type="url" name="query_url" value="{{ item.query_url or '' }}" placeholder="https://..."></label>
+            <label>Fuso horário<input name="timezone" value="{{ item.timezone }}" required><span class="field-help">Nome IANA, ex.: America/Fortaleza.</span></label>
+          </fieldset>
+          <fieldset><legend>Entrada e capacidade</legend>
+            <label class="checkbox-field fixed"><input type="checkbox" checked disabled> CPF obrigatório</label>
+            <label class="checkbox-field"><input type="checkbox" name="registration_required" {% if 'registration' in schema.get('required', []) %}checked{% endif %}> Matrícula obrigatória</label>
+            <label>Máximo de workers<input type="number" name="max_workers" min="1" max="20" value="{{ item.max_workers }}" required><span class="field-help">Cada acesso continua respeitando seu próprio limite.</span></label>
+          </fieldset>
+          <fieldset><legend>Agenda do convênio</legend>
+            <div class="weekday-picker" aria-label="Dias permitidos">
+              {% for day, label in [(0,'Seg'),(1,'Ter'),(2,'Qua'),(3,'Qui'),(4,'Sex'),(5,'Sáb'),(6,'Dom')] %}<label><input type="checkbox" name="weekdays" value="{{ day }}" {% if day in policy.get('weekdays', [0,1,2,3,4]) %}checked{% endif %}>{{ label }}</label>{% endfor %}
+            </div>
+            <label>Início<input type="number" name="start_hour" min="0" max="23" value="{{ '' if policy.get('start_hour') is none else policy.get('start_hour') }}" placeholder="herdar {{ item.platform.start_hour if item.platform else 7 }}"></label>
+            <label>Fim<input type="number" name="end_hour" min="1" max="24" value="{{ '' if policy.get('end_hour') is none else policy.get('end_hour') }}" placeholder="herdar {{ item.platform.end_hour if item.platform else 21 }}"></label>
+            <p class="field-help schedule-copy">Regra efetiva: {{ schedule.start_hour }}h–{{ schedule.end_hour }}h no fuso {{ schedule.timezone }}.</p>
+          </fieldset>
+          <div class="form-actions"><button type="submit">Salvar regras</button></div>
+        </form>
+        {% else %}
+        <dl class="definition-grid"><div><dt>Entrada</dt><dd>CPF{% if 'registration' in schema.get('required', []) %} + matrícula obrigatória{% else %}; matrícula opcional{% endif %}</dd></div><div><dt>Concorrência</dt><dd>até {{ item.max_workers }}</dd></div><div><dt>Agenda</dt><dd>{{ schedule.start_hour }}h–{{ schedule.end_hour }}h</dd></div><div><dt>Fuso</dt><dd>{{ item.timezone }}</dd></div></dl>
+        {% endif %}
+      </div>
+    </details>
+  {% else %}
+    <div class="empty-state"><strong>Nenhum convênio cadastrado</strong><p>Crie um rascunho vinculado a uma processadora.</p></div>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

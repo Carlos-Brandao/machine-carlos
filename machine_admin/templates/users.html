@@ -1,17 +1,20 @@
 {% extends "base.html" %}
+{% from "_ui.html" import role_badge %}
+{% block title %}Usuários · Central de Robôs{% endblock %}
 {% block content %}
-<div class="page-title"><div><p class="eyebrow">Acesso</p><h1>Usuários administrativos</h1></div></div>
+<div class="page-title"><div><p class="eyebrow">Controle de acesso</p><h1>Usuários administrativos</h1><p class="lead">Defina quem pode apenas consultar, operar as execuções ou administrar configurações sensíveis.</p></div></div>
+<section class="glossary"><article><strong>Visualizador</strong><p>Consulta painéis, bases, eventos e o estado dos acessos.</p></article><article><strong>Operador</strong><p>Também importa bases, inicia, pausa e interrompe execuções.</p></article><article><strong>Administrador</strong><p>Gerencia usuários, tokens, integrações e acessos aos portais.</p></article></section>
 <div class="split">
 <section class="card"><h2>Novo usuário</h2><form method="post" class="stack">
   <input type="hidden" name="csrf" value="{{ csrf_token }}">
   <label>Nome<input name="display_name" required></label>
   <label>E-mail<input type="email" name="email" required></label>
-  <label>Senha temporária<input type="password" name="password" minlength="12" required></label>
-  <label>Papel<select name="role"><option value="operator">Operador</option><option value="viewer">Visualizador</option><option value="admin">Administrador</option></select></label>
+  <label>Senha inicial<span class="field-help">Mínimo de 12 caracteres</span><input type="password" name="password" minlength="12" required autocomplete="new-password"></label>
+  <label>Perfil<select name="role"><option value="operator">Operador</option><option value="viewer">Visualizador</option><option value="admin">Administrador</option></select></label>
   <button type="submit">Criar usuário</button>
 </form></section>
-<section class="card"><h2>Usuários</h2><div class="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Ativo</th></tr></thead><tbody>
-{% for item in users %}<tr><td>{{ item.display_name }}</td><td>{{ item.email }}</td><td>{{ item.role }}</td><td>{{ 'Sim' if item.active else 'Não' }}</td></tr>{% endfor %}
+<section class="card"><div class="section-title"><div><h2>Usuários cadastrados</h2><p class="muted">Alterações de perfil, senha ou estado encerram as sessões anteriores.</p></div></div><div class="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Estado</th><th>Último acesso</th><th>Ações</th></tr></thead><tbody>
+  {% for item in users %}<tr><td><strong>{{ item.display_name }}</strong></td><td>{{ item.email }}</td><td>{{ role_badge(item.role) }}</td><td><span class="status {{ 'active' if item.active else 'disabled' }}">{{ 'Ativo' if item.active else 'Desativado' }}</span></td><td>{{ item.last_login_at.strftime('%d/%m/%Y %H:%M') if item.last_login_at else 'Nunca acessou' }}</td><td><details class="row-details"><summary>Gerenciar</summary><div class="stack compact"><form method="post" action="/admin/users/{{ item.id }}/role"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Perfil<select name="role"><option value="viewer" {{ 'selected' if item.role == 'viewer' else '' }}>Visualizador</option><option value="operator" {{ 'selected' if item.role == 'operator' else '' }}>Operador</option><option value="admin" {{ 'selected' if item.role == 'admin' else '' }}>Administrador</option></select></label><button class="small">Atualizar perfil</button></form><form method="post" action="/admin/users/{{ item.id }}/reset-password"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>Nova senha<input type="password" name="password" minlength="12" required autocomplete="new-password"></label><button class="small ghost">Redefinir senha</button></form><form method="post" action="/admin/users/{{ item.id }}/toggle" data-confirm="{{ 'Desativar' if item.active else 'Ativar' }} o usuário {{ item.display_name }}?"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small {{ 'danger' if item.active else 'secondary' }}">{{ 'Desativar' if item.active else 'Ativar' }}</button></form></div></details></td></tr>{% else %}<tr><td colspan="6"><div class="empty-state"><strong>Nenhum usuário cadastrado</strong></div></td></tr>{% endfor %}
 </tbody></table></div></section>
 </div>
 {% endblock %}

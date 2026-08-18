@@ -108,6 +108,23 @@ class TelegramNotifier:
             LOG.warning("TELEGRAM_NOTIFICATION_CHAT_ID deve ser um ID numérico; notificações desativadas.")
             return cls(None, None)
 
+    @classmethod
+    def for_chat(cls, chat_id: int | None) -> "TelegramNotifier":
+        """Cria um destino explícito, sem redirecionar dados para um fallback.
+
+        Resultados de jobs contêm dados pessoais e só podem ser enviados ao
+        chat associado ao pedido. O fallback histórico permanece apenas para
+        notificações operacionais genéricas.
+        """
+        token = get_runtime_secret("TELEGRAM_BOT_TOKEN")
+        if not token or chat_id is None:
+            return cls(None, None)
+        try:
+            return cls(TelegramClient(token), int(chat_id))
+        except (TypeError, ValueError):
+            LOG.warning("Destino Telegram explícito inválido; envio desativado.")
+            return cls(None, None)
+
     @property
     def enabled(self) -> bool:
         return self.client is not None and self.chat_id is not None

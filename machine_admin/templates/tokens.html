@@ -1,16 +1,18 @@
 {% extends "base.html" %}
+{% block title %}Tokens da API · Central de Robôs{% endblock %}
 {% block content %}
-<div class="page-title"><div><p class="eyebrow">Integração</p><h1>Tokens da API</h1></div></div>
-{% if raw_token %}<div class="secret-reveal"><strong>Copie agora — não será exibido novamente:</strong><code>{{ raw_token }}</code></div>{% endif %}
+<div class="page-title"><div><p class="eyebrow">Integração técnica</p><h1>Tokens da API</h1><p class="lead">Autorize o bot do Telegram e os executores com o menor conjunto de permissões necessário.</p></div></div>
+{% if raw_token %}<div class="secret-reveal" role="alert"><strong>Copie agora — este token não será exibido novamente</strong><code>{{ raw_token }}</code><p>Guarde-o no serviço que fará a integração. O banco armazena apenas o hash.</p></div>{% endif %}
 <div class="split">
 <section class="card"><h2>Novo token</h2><form method="post" class="stack">
   <input type="hidden" name="csrf" value="{{ csrf_token }}">
   <label>Nome<input name="name" required placeholder="worker-vps-01"></label>
-  <label>Escopos<input name="scopes" value="jobs:read,jobs:write" required></label>
+  <label>Permissões<span class="field-help">Separe por vírgula: jobs:read, jobs:write, workers:execute</span><input name="scopes" value="jobs:read,jobs:write" required></label>
+  <label>Validade em dias<span class="field-help">Use um token separado por serviço e renove periodicamente</span><input type="number" name="expires_in_days" value="365" min="1" max="3650" required></label>
   <button type="submit">Gerar token</button>
-</form></section>
-<section class="card"><h2>Tokens</h2><div class="table-wrap"><table><thead><tr><th>Nome</th><th>Prefixo</th><th>Escopos</th><th></th></tr></thead><tbody>
-{% for token in tokens %}<tr><td>{{ token.name }}</td><td><code>mc_{{ token.token_prefix }}_…</code></td><td>{{ token.scopes|join(', ') }}</td><td>{% if not token.revoked_at %}<form method="post" action="/admin/tokens/{{ token.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="danger small">Revogar</button></form>{% else %}Revogado{% endif %}</td></tr>{% endfor %}
+  </form><div class="form-note"><strong>Permissões recomendadas</strong><p>Telegram: <code>jobs:read,jobs:write</code><br>Executor: <code>jobs:read,workers:execute</code></p><p>O serviço precisa receber o novo token antes de o anterior expirar.</p></div></section>
+<section class="card"><h2>Tokens cadastrados</h2><div class="table-wrap"><table><thead><tr><th>Nome</th><th>Identificação</th><th>Permissões</th><th>Último uso</th><th>Estado</th><th></th></tr></thead><tbody>
+  {% for token in tokens %}{% set expired = token.expires_at and token.expires_at <= now_utc %}<tr><td><strong>{{ token.name }}</strong></td><td><code>mc_{{ token.token_prefix }}_…</code></td><td>{{ token.scopes|join(', ') }}</td><td>{{ token.last_used_at.strftime('%d/%m/%Y %H:%M') if token.last_used_at else 'Nunca' }}<br><small>Expira: {{ token.expires_at.strftime('%d/%m/%Y') if token.expires_at else 'sem prazo' }}</small></td><td><span class="status {{ 'disabled' if token.revoked_at or expired else 'active' }}">{{ 'Revogado' if token.revoked_at else ('Expirado' if expired else 'Ativo') }}</span></td><td>{% if not token.revoked_at and not expired %}<form method="post" action="/admin/tokens/{{ token.id }}/revoke" data-confirm="Revogar o token “{{ token.name }}”? Os serviços que o utilizam perderão acesso imediatamente."><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="danger small">Revogar</button></form>{% else %}<span class="muted">Sem ações</span>{% endif %}</td></tr>{% else %}<tr><td colspan="6"><div class="empty-state"><strong>Nenhum token cadastrado</strong><p>Crie um token separado para cada serviço.</p></div></td></tr>{% endfor %}
 </tbody></table></div></section>
 </div>
 {% endblock %}

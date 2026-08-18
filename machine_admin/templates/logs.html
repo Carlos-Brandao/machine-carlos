@@ -1,5 +1,20 @@
 {% extends "base.html" %}
+{% from "_ui.html" import event_badge %}
+{% block title %}Eventos · Central de Robôs{% endblock %}
 {% block content %}
-<div class="page-title"><div><p class="eyebrow">Operação</p><h1>Logs de consulta</h1></div></div>
-<section class="card"><p class="muted">Últimos 300 eventos. Nenhum CPF é exibido nesta tela.</p><div class="table-wrap"><table><thead><tr><th>Data</th><th>Job</th><th>Convênio</th><th>Evento</th><th>Mensagem</th></tr></thead><tbody>{% for event in events %}{% set job = jobs.get(event.job_id) %}<tr><td>{{ event.created_at.strftime('%d/%m/%Y %H:%M:%S') }}</td><td>#{{ event.job_id }}</td><td>{{ job.municipality_slug if job else '-' }}</td><td>{{ event.event_type }}</td><td>{{ event.message or '-' }}</td></tr>{% else %}<tr><td colspan="5" class="empty">Ainda não há eventos.</td></tr>{% endfor %}</tbody></table></div></section>
+<div class="page-title"><div><p class="eyebrow">Diagnóstico</p><h1>Eventos da operação{% if selected_job_id %} · job #{{ selected_job_id }}{% endif %}</h1><p class="lead">{% if selected_job_id %}Histórico do job selecionado, limitado aos 1.000 eventos mais recentes.{% else %}Consulte o que aconteceu em cada execução. A lista contém os 300 eventos mais recentes.{% endif %}</p></div></div>
+<div class="notice"><strong>Privacidade</strong><span>A tela não apresenta a coluna CPF. Mesmo assim, mensagens vindas dos portais devem ser tratadas como informação operacional restrita.</span></div>
+<section class="card">
+  <div class="section-title"><div><h2>Linha do tempo</h2><p class="muted" data-filter-count="logs"></p></div></div>
+  <div class="filters filters-wide" role="search">
+    <label>Buscar<input type="search" placeholder="Execução, convênio, evento ou mensagem" data-url-filter="job" data-filter-target="logs" data-filter-field="text"></label>
+    <label>Tipo<select data-filter-target="logs" data-filter-field="severity"><option value="">Todos</option><option value="error">Erros</option><option value="warning">Atenção</option><option value="success">Sucessos</option><option value="neutral">Informativos</option></select></label>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Data</th><th>Execução</th><th>Convênio</th><th>Evento</th><th>Mensagem</th></tr></thead><tbody>
+    {% for event in events %}{% set job = jobs.get(event.job_id) %}{% set is_error = 'erro' in event.event_type or 'error' in event.event_type or 'indisponivel' in event.event_type %}{% set is_warning = 'reenfileir' in event.event_type or 'pending' in event.event_type or 'pause' in event.event_type or 'cancel' in event.event_type %}{% set is_success = 'concluida' in event.event_type or 'sent' in event.event_type or 'success' in event.event_type %}{% set severity = 'error' if is_error else ('warning' if is_warning else ('success' if is_success else 'neutral')) %}
+      <tr data-filter-row="logs" data-text="#{{ event.job_id }} {{ job.municipality_slug if job else '' }} {{ event.event_type }} {{ event.message or '' }}" data-severity="{{ severity }}"><td>{{ event.created_at.strftime('%d/%m/%Y %H:%M:%S') }}</td><td><strong>#{{ event.job_id }}</strong></td><td>{{ job.municipality_slug if job else '-' }}</td><td>{{ event_badge(event.event_type) }}</td><td class="message-cell">{{ event.message or 'Sem mensagem adicional.' }}</td></tr>
+    {% else %}<tr><td colspan="5"><div class="empty-state"><strong>Ainda não há eventos</strong><p>Os eventos aparecerão quando uma base for vinculada ou uma consulta começar.</p></div></td></tr>{% endfor %}
+    <tr class="filter-empty" data-filter-empty="logs" hidden><td colspan="5"><div class="empty-state"><strong>Nenhum evento corresponde aos filtros</strong><p>Limpe ou altere a busca.</p></div></td></tr>
+  </tbody></table></div>
+</section>
 {% endblock %}

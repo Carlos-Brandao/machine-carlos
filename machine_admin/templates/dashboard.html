@@ -1,30 +1,68 @@
 {% extends "base.html" %}
+{% from "_ui.html" import status_badge, progress %}
+{% block title %}Visão geral · Central de Robôs{% endblock %}
 {% block content %}
-<div class="page-title"><div><p class="eyebrow">Visão geral</p><h1>Operação</h1></div><a class="button" href="/admin/datasets">Importar base</a></div>
-<section class="metrics">
-  <article><span>Jobs ativos</span><strong>{{ counts.jobs_active }}</strong></article>
-  <article><span>Itens pendentes</span><strong>{{ counts.items_pending }}</strong></article>
-  <article><span>Credenciais</span><strong>{{ counts.credentials }}</strong></article>
-  <article><span>Bases</span><strong>{{ counts.datasets }}</strong></article>
+<div class="page-title">
+  <div><p class="eyebrow">Visão geral</p><h1>Operação dos robôs</h1><p class="lead">Acompanhe o que está configurado e o que ainda exige atenção antes de iniciar uma consulta.</p></div>
+  {% if user.role in ['admin', 'operator'] %}<a class="button" href="/admin/datasets">Importar uma base</a>{% endif %}
+</div>
+
+<section class="metrics" aria-label="Resumo da operação">
+  <article><span>Execuções ativas</span><strong>{{ counts.jobs_active }}</strong><small>na fila, aguardando base ou processando</small></article>
+  <article><span>Registros a processar</span><strong>{{ counts.items_pending }}</strong><small>pendentes ou em consulta</small></article>
+  <article><span>Acessos cadastrados</span><strong>{{ counts.credentials }}</strong><small>inclui acessos indisponíveis</small></article>
+  <article><span>Bases importadas</span><strong>{{ counts.datasets }}</strong><small>histórico total</small></article>
 </section>
+
 <section class="card">
-  <div class="section-title"><h2>Robôs e convênios</h2><a href="/admin/credentials">Gerenciar credenciais</a></div>
-  <div class="table-wrap"><table><thead><tr><th>Convênio</th><th>Plataforma</th><th>Estado</th><th>Credenciais ativas</th><th>Capacidade</th><th>Jobs ativos</th></tr></thead><tbody>
-  {% for item in robots %}<tr>
-    <td>{{ item.municipality.name }}</td>
-    <td>{{ item.platform.name if item.platform else item.municipality.platform_slug }}</td>
-    <td><span class="status {{ 'active' if item.municipality.enabled and item.platform and item.platform.enabled else 'disabled' }}">{{ 'ativo' if item.municipality.enabled and item.platform and item.platform.enabled else 'pendente' }}</span></td>
-    <td>{{ item.credentials }}</td>
-    <td>{{ item.municipality.max_workers }}</td>
-    <td>{{ item.active_jobs }}</td>
-  </tr>{% else %}<tr><td colspan="6" class="empty">Nenhum robô catalogado.</td></tr>{% endfor %}
-  </tbody></table></div>
+  <div class="section-title">
+    <div><h2>Prontidão por convênio</h2><p class="muted">“Configurado” confirma cadastro e acesso ativo; não confirma que o portal ou o executor está online agora.</p></div>
+    <a href="/admin/credentials">Gerenciar acessos</a>
+  </div>
+  <div class="readiness-grid">
+    {% for item in robots %}
+      {% set platform_enabled = item.platform and item.platform.enabled %}
+      {% set municipality_enabled = item.municipality.enabled %}
+      {% set details = item.readiness|default({}, true) %}
+      {% set explicit_status = details.status|default(details.state|default('', true), true) %}
+      {% set can_start = details.can_start|default(none) %}
+      {% set active_credentials = details.active_credentials if details.active_credentials is defined else item.credentials %}
+      {% if can_start == true or explicit_status in ['operational', 'online'] %}
+        {% set readiness_class, readiness_label = 'ready', 'Pronto para operar' %}
+      {% elif can_start == false or explicit_status in ['blocked', 'offline', 'unavailable', 'paused', 'retired'] or not municipality_enabled or not platform_enabled %}
+        {% set readiness_class, readiness_label = 'blocked', 'Indisponível' %}
+      {% elif explicit_status in ['warning', 'degraded', 'attention', 'draft', 'testing'] or active_credentials == 0 %}
+        {% set readiness_class, readiness_label = 'attention', 'Requer atenção' %}
+      {% else %}
+        {% set readiness_class, readiness_label = 'configured', 'Configurado' %}
+      {% endif %}
+      <article class="readiness-card {{ readiness_class }}">
+        <div class="readiness-heading">
+          <div><p class="eyebrow">{{ item.platform.name if item.platform else item.municipality.platform_slug }}</p><h3>{{ item.municipality.name }}</h3></div>
+          <span class="readiness-badge">{{ readiness_label }}</span>
+        </div>
+        <dl class="compact-stats">
+          <div><dt>Acessos ativos</dt><dd>{{ active_credentials }}</dd></div>
+          <div><dt>{{ 'Executores online' if details.online_workers is defined else 'Capacidade cadastrada' }}</dt><dd>{{ details.online_workers if details.online_workers is defined else item.municipality.max_workers }}</dd></div>
+          <div><dt>Execuções ativas</dt><dd>{{ item.active_jobs }}</dd></div>
+        </dl>
+        <div class="readiness-message">
+          <strong>Causa</strong>
+          <p>{{ details.reason if details.reason is defined else (details.summary if details.summary is defined else ('Convênio ou processadora desativado no catálogo.' if readiness_class == 'blocked' else ('Nenhum acesso ativo foi cadastrado.' if active_credentials == 0 else 'Cadastro básico disponível; confirme portal, executor e integrações antes de executar.'))) }}</p>
+        </div>
+        <div class="readiness-action"><strong>Próxima ação</strong><span>{{ details.action if details.action is defined else (details.issues[0].action if details.issues is defined and details.issues else ('Cadastre ou reative um acesso ao portal.' if active_credentials == 0 else ('Revise a configuração do convênio.' if readiness_class == 'blocked' else 'Faça um teste pequeno e acompanhe os primeiros retornos.'))) }}</span></div>
+      </article>
+    {% else %}
+      <div class="empty-state"><strong>Nenhum robô foi catalogado</strong><p>Cadastre processadoras e convênios antes de iniciar a operação.</p></div>
+    {% endfor %}
+  </div>
 </section>
+
 <section class="card">
-  <div class="section-title"><h2>Jobs recentes</h2><a href="/admin/jobs">Ver todos</a></div>
-  <div class="table-wrap"><table><thead><tr><th>ID</th><th>Convênio</th><th>Status</th><th>Progresso</th><th>Criado</th></tr></thead><tbody>
-  {% for job in jobs %}<tr><td>#{{ job.id }}</td><td>{{ job.municipality_slug }}</td><td><span class="status {{ job.status }}">{{ job.status }}</span></td><td>{{ job.completed_items }}/{{ job.total_items }}</td><td>{{ job.created_at.strftime('%d/%m %H:%M') if job.created_at else '-' }}</td></tr>
-  {% else %}<tr><td colspan="5" class="empty">Nenhum job criado.</td></tr>{% endfor %}
+  <div class="section-title"><div><h2>Execuções recentes</h2><p class="muted">O progresso considera concluídos e falhos.</p></div><a href="/admin/jobs">Ver todas</a></div>
+  <div class="table-wrap"><table><thead><tr><th>ID</th><th>Convênio</th><th>Estado</th><th>Progresso</th><th>Solicitado em</th></tr></thead><tbody>
+  {% for job in jobs %}<tr><td><a class="table-link" href="/admin/logs?job={{ job.id }}">#{{ job.id }}</a></td><td>{{ job.municipality_slug }}</td><td>{{ status_badge(job.status) }}</td><td class="progress-cell">{{ progress(job) }}</td><td>{{ job.created_at.strftime('%d/%m/%Y %H:%M') if job.created_at else '-' }}</td></tr>
+  {% else %}<tr><td colspan="5"><div class="empty-state"><strong>Nenhuma execução criada</strong><p>Importe uma base e inicie o primeiro job.</p>{% if user.role in ['admin', 'operator'] %}<a class="button small" href="/admin/datasets">Ir para bases</a>{% endif %}</div></td></tr>{% endfor %}
   </tbody></table></div>
 </section>
 {% endblock %}

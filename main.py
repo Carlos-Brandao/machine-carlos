@@ -97,14 +97,34 @@ def run_bot(bot: str, config: dict, input_file: Path, temp_file: Path, output_fi
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dispatcher de bots de consulta de margem")
+    parser = argparse.ArgumentParser(
+        description="Dispatcher legado apenas para diagnóstico local"
+    )
     parser.add_argument("bot", choices=BOTS, nargs="?", default="facil", help="Bot a executar (padrão: facil)")
     parser.add_argument("convenio", nargs="?", help="Convênio a consultar")
     parser.add_argument("--list", action="store_true", help="Lista convênios disponíveis")
     parser.add_argument("-y", "--yes", action="store_true", help="Aceita retomadas automaticamente (útil para automações/cron)")
     parser.add_argument("-f", "--file", help="Caminho do arquivo de entrada (se omitido, abre a interface gráfica)")
     parser.add_argument("--cron", action="store_true", help="Executa no modo cron (valida intervalo de 15 dias e retomadas automáticas)")
+    parser.add_argument(
+        "--allow-legacy-local",
+        action="store_true",
+        help="Confirma uma execução local fora da fila administrativa",
+    )
     args = parser.parse_args()
+
+    if not args.allow_legacy_local:
+        parser.error(
+            "dispatcher legado bloqueado; use o painel/GenericWorker. "
+            "Somente diagnóstico local explícito aceita --allow-legacy-local"
+        )
+    if os.getenv("MACHINE_ENV", "").strip().lower() == "production":
+        parser.error("dispatcher legado é proibido em produção")
+    if args.bot in {"safeconsig", "grid"}:
+        parser.error(
+            f"{args.bot} permanece indisponível até possuir adapter "
+            "transacional homologado"
+        )
 
     if args.cron:
         args.yes = True

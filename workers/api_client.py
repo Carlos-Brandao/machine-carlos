@@ -29,19 +29,37 @@ class WorkerAPIClient:
         )
 
     def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        response = self.session.request(
-            method, f"{self.base_url}{path}", timeout=35, **kwargs
-        )
+        try:
+            response = self.session.request(
+                method, f"{self.base_url}{path}", timeout=35, **kwargs
+            )
+        except requests.RequestException as exc:
+            raise WorkerAPIError(
+                f"API interna indisponível: {type(exc).__name__}."
+            ) from exc
         if response.status_code == 409:
             raise WorkerAPIConflict(self._detail(response))
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
             raise WorkerAPIError(self._detail(response)) from exc
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise WorkerAPIError("Resposta inválida da API interna.") from exc
         if not isinstance(data, dict):
             raise WorkerAPIError("Resposta inválida da API interna.")
         return data
+
+    def runtime_secret(self, key: str) -> str:
+        """Obtém uma chave operacional permitida pelo escopo deste token."""
+        normalized = key.strip().upper()
+        if not normalized or not normalized.replace("_", "").isalnum():
+            raise WorkerAPIError("Nome de segredo inválido.")
+        payload = self.request("GET", f"/api/runtime/secrets/{normalized}")
+        if payload.get("key") != normalized or not isinstance(payload.get("value"), str):
+            raise WorkerAPIError("Resposta inválida da fonte de segredos.")
+        return str(payload["value"])
 
     @staticmethod
     def _detail(response: requests.Response) -> str:

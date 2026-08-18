@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from inspect import signature
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.exceptions import InvalidTag
 from fastapi.testclient import TestClient
@@ -29,7 +31,7 @@ from machine_admin.security import (
     token_matches,
     verify_password,
 )
-from machine_admin.web import create_app
+from machine_admin.web import ApiPrincipal, create_app
 
 
 def settings_for(storage_dir: Path) -> Settings:
@@ -113,18 +115,18 @@ class AdminCoreTests(unittest.TestCase):
                 config,
                 municipality_slug="boa-vista",
                 filename="base.csv",
-                payload=b"CPF,MATRICULA\n01234567890,ABC\n",
+                payload=b"CPF,MATRICULA\n52998224725,ABC\n",
                 uploaded_by_id=1,
             )
             encrypted_file = Path(dataset.storage_path)
             self.assertTrue(encrypted_file.exists())
-            self.assertNotIn(b"01234567890", encrypted_file.read_bytes())
+            self.assertNotIn(b"52998224725", encrypted_file.read_bytes())
             record = next(value for value in session.records if isinstance(value, DatasetRecord))
             cpf = SecretCipher(config.master_key).decrypt(
                 record.cpf_ciphertext,
                 context=f"record:{record.encryption_context}:cpf",
             )
-            self.assertEqual("01234567890", cpf)
+            self.assertEqual("52998224725", cpf)
 
             invalid_session = FakeImportSession()
             with self.assertRaises(ValueError):
@@ -145,7 +147,7 @@ class AdminCoreTests(unittest.TestCase):
                 settings_for(Path(directory)),
                 municipality_slug="boa-vista",
                 filename="mixed.csv",
-                payload=b"CPF\n01234567890\ninvalido\n",
+                payload=b"CPF\n52998224725\ninvalido\n",
                 uploaded_by_id=1,
             )
             self.assertEqual(1, dataset.row_count)
@@ -163,7 +165,7 @@ class AdminCoreTests(unittest.TestCase):
                 settings_for(Path(directory)),
                 municipality_slug="itabuna",
                 filename="base.csv",
-                payload=b"CPF,MATRICULA\n01234567890,ABC\n",
+                payload=b"CPF,MATRICULA\n52998224725,ABC\n",
                 uploaded_by_id=1,
                 custom_columns="Banco, Consultor",
             )
@@ -181,7 +183,7 @@ class AdminCoreTests(unittest.TestCase):
                 settings_for(Path(directory)),
                 municipality_slug="itabuna",
                 filename="base.csv",
-                payload=b"CPF,BANCO\n01234567890,Exemplo\n",
+                payload=b"CPF,BANCO\n52998224725,Exemplo\n",
                 uploaded_by_id=1,
             )
             self.assertEqual(1, dataset.row_count)
@@ -191,7 +193,7 @@ class AdminCoreTests(unittest.TestCase):
                     settings_for(Path(directory)),
                     municipality_slug="itabuna",
                     filename="base.csv",
-                    payload=b"MATRICULA,CPF\nABC,01234567890\n",
+                    payload=b"MATRICULA,CPF\nABC,52998224725\n",
                     uploaded_by_id=1,
                 )
 
@@ -208,15 +210,44 @@ class AdminCoreTests(unittest.TestCase):
             self.assertIn("/admin/credentials/{credential_id}/edit", paths)
             self.assertIn("/admin/datasets", paths)
             self.assertIn("/admin/logs", paths)
+            self.assertIn("/admin/agreements", paths)
+            self.assertIn("/admin/notifications", paths)
             self.assertIn("/api/workers/items/claim", paths)
+            self.assertIn("/api/runtime/secrets/{secret_key}", paths)
             upload_route = next(route for route in app.routes if route.path == "/admin/datasets" and "POST" in route.methods)
             self.assertNotIn("custom_columns", signature(upload_route.endpoint).parameters)
             self.assertIn("/admin/datasets/{dataset_id}/jobs", paths)
-            self.assertEqual(14, len(Base.metadata.tables))
+            self.assertEqual(17, len(Base.metadata.tables))
 
             response = TestClient(app).get("/login")
             self.assertEqual(200, response.status_code)
             self.assertIn("Machine Admin", response.text)
+
+    def test_runtime_secret_endpoint_has_a_closed_allowlist_and_no_store(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = create_app(settings_for(Path(directory)))
+        endpoint = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/api/runtime/secrets/{secret_key}"
+        )
+        with patch("machine_admin.web.get_runtime_secret", return_value="rotated"):
+            response = endpoint(
+                "TWOCAPTCHA_API_KEY",
+                ApiPrincipal("worker", frozenset({"workers:execute"})),
+            )
+        self.assertEqual(
+            {"key": "TWOCAPTCHA_API_KEY", "value": "rotated"},
+            json.loads(response.body),
+        )
+        self.assertIn("no-store", response.headers["cache-control"])
+
+        with self.assertRaises(Exception) as caught:
+            endpoint(
+                "APP_MASTER_KEY",
+                ApiPrincipal("worker", frozenset({"workers:execute"})),
+            )
+        self.assertEqual(404, getattr(caught.exception, "status_code", None))
 
 
 if __name__ == "__main__":

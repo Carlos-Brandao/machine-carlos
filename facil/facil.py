@@ -5,6 +5,7 @@ import signal
 import sys
 import threading
 import traceback
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +40,28 @@ remote_processes = []
 
 class SearchFormUnavailable(RuntimeError):
     """A sessão autenticada não apresentou o formulário de busca."""
+
+
+class SearchResponseUnconfirmed(RuntimeError):
+    """A busca terminou sem resultado e sem evidência negativa explícita."""
+
+
+def _fold_text(value: object) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    return normalized.encode("ascii", "ignore").decode("ascii").casefold()
+
+
+async def _explicit_not_found(page: Page) -> bool:
+    body = _fold_text(await page.locator("body").inner_text())
+    return any(
+        evidence in body
+        for evidence in (
+            "servidor nao encontrado",
+            "servidor nao localizado",
+            "cpf nao encontrado",
+            "nao foi encontrado servidor",
+        )
+    )
 
 
 def _start_remote_session() -> str | None:
@@ -279,13 +302,17 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
 
         if await page.locator("table.table-consig tbody tr td a").count() > 0:
             return True
+        if await _explicit_not_found(page):
+            return False
 
         await page.goto(busca_url, wait_until="domcontentloaded", timeout=20_000)
         await page.wait_for_timeout(1_500)
         await _fechar_modais(page)
         await page.wait_for_selector("input[name='cpf']", timeout=15_000)
 
-    return False
+    raise SearchResponseUnconfirmed(
+        "O FACILCONSIG não confirmou resultado nem servidor inexistente."
+    )
 
 
 async def _extrair(page: Page) -> dict:

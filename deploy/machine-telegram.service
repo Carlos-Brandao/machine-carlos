@@ -2,14 +2,35 @@
 Description=Machine Telegram controller
 After=network-online.target machine-backend.service
 Requires=machine-backend.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=/root/ROBO_FACIL
-ExecStart=/root/ROBO_FACIL/env/bin/python -u run_telegram_bot.py
+User=machine-telegram
+Group=machine-telegram
+WorkingDirectory=/opt/machine/current
+EnvironmentFile=/opt/machine/shared/env/telegram.env
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/opt/machine/shared/home/machine-telegram
+ExecStartPre=/usr/bin/test -x /opt/machine/current/.venv/bin/python
+ExecStart=/opt/machine/current/.venv/bin/python -u run_telegram_bot.py
 Restart=always
 RestartSec=5
-Environment=PYTHONUNBUFFERED=1
+TimeoutStopSec=120
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+InaccessiblePaths=/opt/machine/shared/.env /opt/machine/shared/env
+ReadWritePaths=/opt/machine/shared/home/machine-telegram
 
 [Install]
 WantedBy=multi-user.target

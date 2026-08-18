@@ -1,16 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Entrar · Machine Admin{% endblock %}
+{% block title %}Entrar · Central de Robôs{% endblock %}
 {% block content %}
 <section class="card login-card">
-  <p class="eyebrow">Operação interna</p>
-  <h1>Entrar no Machine</h1>
-  <p class="muted">Gerencie bases, credenciais e consultas em um só lugar.</p>
+  <div class="login-brand"><span class="brand-mark">M</span><span>Central de Robôs</span></div>
+  <p class="eyebrow">Acesso restrito</p>
+  <h1>Entre para acompanhar a operação</h1>
+  <p class="muted">Gerencie bases, acessos aos portais e execuções em um só lugar.</p>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
   <form method="post" action="/login" class="stack">
     <input type="hidden" name="csrf" value="{{ csrf_token }}">
     <label>E-mail<input type="email" name="email" required autocomplete="username"></label>
     <label>Senha<input type="password" name="password" required autocomplete="current-password"></label>
-    <button type="submit">Entrar</button>
+    <button type="submit">Entrar na central</button>
   </form>
 </section>
 {% endblock %}

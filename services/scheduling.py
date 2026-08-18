@@ -1,7 +1,7 @@
-"""Regras puras de janela de execução por processadora.
+"""Compatibilidade exclusiva do dispatcher legado local.
 
-O executor consulta este módulo antes de iniciar um job. As regras usam o
-horário de Fortaleza e podem ser refinadas por processadora sem alterar a API.
+O GenericWorker não importa este módulo. Em produção a única autoridade é
+``machine_admin.scheduling``, baseada no convênio persistido no PostgreSQL.
 """
 
 from __future__ import annotations

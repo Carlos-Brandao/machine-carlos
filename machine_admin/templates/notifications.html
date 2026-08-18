@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "_ui.html" import status_badge %}
+{% block title %}Envios · Central de Robôs{% endblock %}
+{% block content %}
+<div class="page-title"><div><p class="eyebrow">Entrega de resultados</p><h1>Envios</h1><p class="lead">A conclusão do job não depende do Telegram. Os arquivos entram nesta fila e são reenviados automaticamente quando a integração falha.</p></div></div>
+<section class="help-grid" aria-label="Como os envios funcionam">
+  <article><span class="help-number">1</span><div><strong>Destino do pedido</strong><p>O resultado é enviado somente ao chat associado ao job; nunca a um destino genérico.</p></div></article>
+  <article><span class="help-number">2</span><div><strong>Até cinco tentativas</strong><p>Falhas usam espera progressiva e permanecem visíveis com a mensagem devolvida pela integração.</p></div></article>
+  <article><span class="help-number">3</span><div><strong>Reprocessamento manual</strong><p>Depois de corrigir token ou conexão, use “Tentar novamente” sem rerodar as consultas.</p></div></article>
+</section>
+<section class="card">
+  <div class="section-title"><div><h2>Fila de entrega</h2><p class="muted" data-filter-count="notifications"></p></div></div>
+  <div class="filters" role="search">
+    <label>Buscar<input type="search" placeholder="Job, convênio ou erro" data-filter-target="notifications" data-filter-field="text"></label>
+    <label>Estado<select data-filter-target="notifications" data-filter-field="status"><option value="">Todos</option><option value="pending">Pendente</option><option value="processing">Enviando</option><option value="retry">Nova tentativa</option><option value="sent">Enviado</option><option value="failed">Falhou</option><option value="cancelled">Cancelado</option></select></label>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>ID</th><th>Job</th><th>Convênio</th><th>Canal</th><th>Estado</th><th>Tentativas</th><th>Último erro</th><th>Criado em</th><th>Ações</th></tr></thead><tbody>
+  {% for item in notifications %}{% set job = jobs.get(item.job_id) %}
+    <tr data-filter-row="notifications" data-text="#{{ item.id }} #{{ item.job_id or '' }} {{ job.municipality_slug if job else '' }} {{ item.last_error or '' }}" data-status="{{ item.status }}">
+      <td>#{{ item.id }}</td><td>{% if item.job_id %}<a class="table-link" href="/admin/logs?job={{ item.job_id }}">#{{ item.job_id }}</a>{% else %}-{% endif %}</td><td>{{ job.municipality_slug if job else '-' }}</td><td>{{ item.channel|title }}</td><td>{{ status_badge(item.status) }}</td><td>{{ item.attempts }} / {{ item.max_attempts }}</td><td class="message-cell">{{ item.last_error or '-' }}</td><td>{{ item.created_at.strftime('%d/%m/%Y %H:%M') if item.created_at else '-' }}</td>
+      <td><div class="job-actions">{% if user.role in ['admin', 'operator'] and item.status not in ['sent', 'processing'] %}<form method="post" action="/admin/notifications/{{ item.id }}/retry"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small">Tentar novamente</button></form>{% if item.status != 'cancelled' %}<form method="post" action="/admin/notifications/{{ item.id }}/cancel" data-confirm="Cancelar este envio? O job e o arquivo continuarão preservados."><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small danger-outline">Cancelar</button></form>{% endif %}{% else %}<span class="muted">{{ 'Envio em andamento' if item.status == 'processing' else 'Sem ações' }}</span>{% endif %}</div></td>
+    </tr>
+  {% else %}<tr><td colspan="9"><div class="empty-state"><strong>Nenhum envio registrado</strong><p>A fila aparecerá quando um job solicitado pelo Telegram terminar.</p></div></td></tr>{% endfor %}
+  <tr class="filter-empty" data-filter-empty="notifications" hidden><td colspan="9"><div class="empty-state"><strong>Nenhum envio corresponde aos filtros</strong><p>Limpe ou altere a busca.</p></div></td></tr>
+  </tbody></table></div>
+</section>
+{% endblock %}

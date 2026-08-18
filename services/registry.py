@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,24 @@ class MunicipalityDefinition:
     login_url: str | None = None
     query_url: str | None = None
     max_workers: int = 1
+    operational_status: str = "draft"
+    timezone: str = "America/Fortaleza"
+    input_schema: dict[str, object] = field(
+        default_factory=lambda: {
+            "version": 1,
+            "required": ["cpf"],
+            "optional": ["registration"],
+            "deduplication_key": ["cpf", "registration"],
+        }
+    )
+    schedule_policy: dict[str, object] = field(
+        default_factory=lambda: {
+            "weekdays": [0, 1, 2, 3, 4],
+            "start_hour": None,
+            "end_hour": None,
+        }
+    )
+    adapter_version: str | None = None
 
 
 PLATFORMS: dict[str, PlatformDefinition] = {
@@ -56,17 +74,46 @@ MUNICIPALITIES: dict[str, MunicipalityDefinition] = {
             "CADPessoaListar.aspx"
         ),
         max_workers=3,
+        operational_status="ready",
+        timezone="America/Boa_Vista",
+        input_schema={
+            "version": 1,
+            "required": ["cpf"],
+            "optional": ["registration"],
+            "deduplication_key": ["cpf"],
+        },
+        schedule_policy={
+            "weekdays": [0, 1, 2, 3, 4, 5, 6],
+            "start_hour": 0,
+            "end_hour": 24,
+        },
+        adapter_version="rf1.v1",
     ),
     "pref2": MunicipalityDefinition("pref2", "Prefeitura 2", "rf1", enabled=False),
-    "fortaleza": MunicipalityDefinition("fortaleza", "Fortaleza", "safeconsig"),
-    "maranguape": MunicipalityDefinition("maranguape", "Maranguape", "safeconsig"),
-    "teresina": MunicipalityDefinition("teresina", "Teresina", "facil"),
+    "fortaleza": MunicipalityDefinition(
+        "fortaleza", "Fortaleza", "safeconsig", adapter_version="safeconsig.legacy"
+    ),
+    "maranguape": MunicipalityDefinition(
+        "maranguape", "Maranguape", "safeconsig", adapter_version="safeconsig.legacy"
+    ),
+    "teresina": MunicipalityDefinition(
+        "teresina", "Teresina", "facil", adapter_version="facil.v1"
+    ),
     "gov-am": MunicipalityDefinition(
         "gov-am",
         "GOV AM",
         "facil",
         login_url="https://faciltecnologia.com.br/consigfacil/amazonas",
         query_url="https://faciltecnologia.com.br/consigfacil/amazonas",
+        operational_status="ready",
+        timezone="America/Manaus",
+        input_schema={
+            "version": 1,
+            "required": ["cpf"],
+            "optional": ["registration"],
+            "deduplication_key": ["cpf"],
+        },
+        adapter_version="facil.v1",
     ),
     "paulista": MunicipalityDefinition(
         "paulista",
@@ -74,17 +121,32 @@ MUNICIPALITIES: dict[str, MunicipalityDefinition] = {
         "facil",
         login_url="https://www.faciltecnologia.com.br/consigfacil/paulista",
         query_url="https://www.faciltecnologia.com.br/consigfacil/paulista",
+        operational_status="ready",
+        input_schema={
+            "version": 1,
+            "required": ["cpf", "registration"],
+            "optional": [],
+            "deduplication_key": ["cpf", "registration"],
+        },
+        adapter_version="facil.v1",
     ),
     "paulista-previdencia": MunicipalityDefinition(
-        "paulista-previdencia", "Paulista Previdência", "facil"
+        "paulista-previdencia",
+        "Paulista Previdência",
+        "facil",
+        adapter_version="facil.v1",
     ),
-    "mossoro": MunicipalityDefinition("mossoro", "Mossoró", "facil"),
+    "mossoro": MunicipalityDefinition(
+        "mossoro", "Mossoró", "facil", adapter_version="facil.v1"
+    ),
     "itabuna": MunicipalityDefinition(
         "itabuna",
         "Itabuna",
         "consiglog",
         login_url="https://saec.consigx.com.br/Login.aspx",
         query_url="https://saec.consigx.com.br/Margem/ConsultaMargem.aspx",
+        operational_status="testing",
+        adapter_version="consiglog.v1",
     ),
     "chapeco": MunicipalityDefinition(
         "chapeco", "Chapecó", "easyconsig", enabled=False

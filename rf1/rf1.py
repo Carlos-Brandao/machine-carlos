@@ -1,8 +1,10 @@
 import os
 import re
+import secrets
 import signal
 import sys
 import traceback
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -22,8 +24,128 @@ LOGIN_PATH = "ConsigAcessoUsuarioLogar.aspx"
 LOGIN_ATTEMPTS = 5
 
 
+_ARM_CPF_POSTBACK_PROBE = r"""([cpfSelector, matriculaSelector, orgaoSelector, token]) => {
+    const cpf = document.querySelector(cpfSelector);
+    const matricula = document.querySelector(matriculaSelector);
+    const orgao = document.querySelector(orgaoSelector);
+    const viewState = document.querySelector("input[name='__VIEWSTATE']");
+    if (!cpf || !matricula || !orgao) {
+        return null;
+    }
+    cpf.dataset.rf1PostbackProbe = token;
+    return {
+        cpf: (cpf.value || '').replace(/\D/g, ''),
+        matricula: (matricula.value || '').trim(),
+        orgao: (orgao.value || '').trim(),
+        viewState: viewState?.value || ''
+    };
+}"""
+
+
+_CPF_DEPENDENCIES_READY = r"""([cpfSelector, matriculaSelector, orgaoSelector,
+                                  expectedCpf, token, previous]) => {
+    const cpf = document.querySelector(cpfSelector);
+    const matricula = document.querySelector(matriculaSelector);
+    const orgao = document.querySelector(orgaoSelector);
+    const viewState = document.querySelector("input[name='__VIEWSTATE']");
+    if (!cpf || !matricula || !orgao) {
+        return false;
+    }
+
+    const currentCpf = (cpf.value || '').replace(/\D/g, '');
+    const currentMatricula = (matricula.value || '').trim();
+    const currentOrgao = (orgao.value || '').trim();
+    if (currentCpf !== expectedCpf || !currentMatricula || !currentOrgao) {
+        return false;
+    }
+
+    // Em um postback completo o input e o seu dataset são recriados. Em um
+    // postback parcial o ViewState ou as dependências mudam. Assim valores não
+    // vazios deixados pela consulta anterior nunca confirmam a nova pesquisa.
+    const inputWasReplaced = cpf.dataset.rf1PostbackProbe !== token;
+    const dependenciesChanged = (
+        currentMatricula !== previous.matricula ||
+        currentOrgao !== previous.orgao
+    );
+    const partialPostbackFinished = (
+        (viewState?.value || '') !== previous.viewState &&
+        (dependenciesChanged || previous.cpf === expectedCpf)
+    );
+    return inputWasReplaced || dependenciesChanged || partialPostbackFinished;
+}"""
+
+
+_CPF_POSTBACK_OBSERVED = r"""([cpfSelector, matriculaSelector, orgaoSelector,
+                                 expectedCpf, token, previous]) => {
+    const cpf = document.querySelector(cpfSelector);
+    const matricula = document.querySelector(matriculaSelector);
+    const orgao = document.querySelector(orgaoSelector);
+    const viewState = document.querySelector("input[name='__VIEWSTATE']");
+    if (!cpf) {
+        return false;
+    }
+    const currentCpf = (cpf.value || '').replace(/\D/g, '');
+    if (currentCpf !== expectedCpf) {
+        return false;
+    }
+    return (
+        cpf.dataset.rf1PostbackProbe !== token ||
+        (viewState?.value || '') !== previous.viewState ||
+        (matricula?.value || '').trim() !== previous.matricula ||
+        (orgao?.value || '').trim() !== previous.orgao
+    );
+}"""
+
+
 class RF1Error(RuntimeError):
     """Falha conhecida na navegação ou configuração do RF1."""
+
+
+class RF1NotFound(RF1Error):
+    """O portal exibiu evidência explícita de servidor inexistente."""
+
+
+def _fold_text(value: object) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    return normalized.encode("ascii", "ignore").decode("ascii").casefold()
+
+
+def _has_explicit_not_found(page: Page) -> bool:
+    text = _fold_text(page.locator("body").inner_text())
+    return any(
+        evidence in text
+        for evidence in (
+            "servidor nao localizado",
+            "servidor nao encontrado",
+            "pessoa nao encontrada",
+            "cpf nao encontrado",
+        )
+    )
+
+
+def _postback_observed(
+    page: Page,
+    *,
+    cpf_selector: str,
+    matricula_selector: str,
+    orgao_selector: str,
+    normalized_cpf: str,
+    token: str,
+    previous: dict,
+) -> bool:
+    return bool(
+        page.evaluate(
+            _CPF_POSTBACK_OBSERVED,
+            [
+                cpf_selector,
+                matricula_selector,
+                orgao_selector,
+                normalized_cpf,
+                token,
+                previous,
+            ],
+        )
+    )
 
 
 def _salvar(dados: list[dict], path: Path) -> None:
@@ -148,43 +270,136 @@ def _logout(page: Page) -> bool:
         return False
 
 
+def _await_cpf_dependencies(page: Page, normalized_cpf: str) -> None:
+    """Dispara e confirma o postback que resolve matrícula e órgão pelo CPF.
+
+    O RF1 preserva os valores da consulta anterior no formulário. Por isso,
+    apenas aguardar campos não vazios não prova que o novo CPF foi processado.
+    Um marcador é instalado no input antes de tirar o foco: o postback completo
+    recria esse elemento; o parcial altera o ViewState ou as dependências.
+
+    Uma falha transitória recebe uma única tentativa adicional após ``reload``.
+    Se o portal continuar sem confirmar a rodada, o timeout é propagado para o
+    worker encerrar a sessão e reprogramar o item, sem produzir falso negativo.
+    """
+    cpf_selector = f"{_PFXO}txtCPF"
+    matricula_selector = f"{_PFXO}txtMatricula"
+    orgao_selector = f"{_PFXO}cboOrgao"
+    button_selector = f"{_PFXO}btnListar"
+
+    for attempt in range(2):
+        page.wait_for_selector(button_selector, timeout=20_000)
+        token = secrets.token_hex(12)
+        previous = page.evaluate(
+            _ARM_CPF_POSTBACK_PROBE,
+            [cpf_selector, matricula_selector, orgao_selector, token],
+        )
+        if not isinstance(previous, dict):
+            raise RF1Error(
+                "O formulário RF1 não exibiu CPF, matrícula e órgão esperados."
+            )
+
+        had_not_found_evidence = _has_explicit_not_found(page)
+        page.fill(cpf_selector, normalized_cpf)
+
+        # Equivale ao gesto humano de clicar fora do CPF. O onchange do campo
+        # dispara o postback ASP.NET que preenche matrícula e órgão.
+        page.locator(matricula_selector).click()
+        try:
+            page.wait_for_function(
+                _CPF_DEPENDENCIES_READY,
+                arg=[
+                    cpf_selector,
+                    matricula_selector,
+                    orgao_selector,
+                    normalized_cpf,
+                    token,
+                    previous,
+                ],
+                timeout=15_000,
+            )
+            # Dá ao WebForms um ciclo curto para concluir handlers executados
+            # imediatamente após a substituição dos controles.
+            page.wait_for_timeout(250)
+            return
+        except TimeoutError:
+            has_not_found_evidence = _has_explicit_not_found(page)
+            if has_not_found_evidence and (
+                not had_not_found_evidence
+                or _postback_observed(
+                    page,
+                    cpf_selector=cpf_selector,
+                    matricula_selector=matricula_selector,
+                    orgao_selector=orgao_selector,
+                    normalized_cpf=normalized_cpf,
+                    token=token,
+                    previous=previous,
+                )
+            ):
+                raise RF1NotFound("Servidor não localizado pelo RF1.")
+            if attempt:
+                raise
+
+            # Recupera postbacks que ficaram presos sem reaproveitar o DOM
+            # contaminado. A segunda falha sobe como retryable_error.
+            page.reload(wait_until="domcontentloaded", timeout=20_000)
+
+
 def _consultar(page: Page, cpf: str) -> dict:
     normalized_cpf = _digits(cpf)
     if len(normalized_cpf) != 11:
         raise RF1Error("CPF inválido na planilha de entrada.")
-    campo = f"{_PFXO}txtCPF"
-    page.fill(campo, normalized_cpf)
-
-    # No RF1 de Boa Vista o órgão não pertence à sessão de login: ele é
-    # resolvido pelo postback disparado ao perder o foco do CPF. Clicar em
-    # "Consultar" com o cursor ainda no CPF faz a página pesquisar sem órgão
-    # (ou com o estado da consulta anterior). Reproduzimos o gesto humano:
-    # preencher CPF -> sair do campo -> aguardar a matrícula/órgão retornarem.
-    page.locator(f"{_PFXO}txtMatricula").click()
-    orgao = f"{_PFXO}cboOrgao"
-    page.wait_for_function(
-        """selector => {
-            const select = document.querySelector(selector);
-            return Boolean(select && select.options.length && select.value);
-        }""",
-        arg=orgao,
-        timeout=15_000,
+    _await_cpf_dependencies(page, normalized_cpf)
+    cpf_selector = f"{_PFXO}txtCPF"
+    matricula_selector = f"{_PFXO}txtMatricula"
+    orgao_selector = f"{_PFXO}cboOrgao"
+    response_probe_token = secrets.token_hex(12)
+    response_probe = page.evaluate(
+        _ARM_CPF_POSTBACK_PROBE,
+        [
+            cpf_selector,
+            matricula_selector,
+            orgao_selector,
+            response_probe_token,
+        ],
     )
+    had_not_found_evidence = _has_explicit_not_found(page)
     page.click(f"{_PFXO}btnListar")
 
     # O postback do WebForms é assíncrono. Um tempo fixo aqui permitia que a
     # leitura capturasse os dados visíveis da consulta anterior, duplicando
     # CPFs no resultado. Só seguimos quando o CPF devolvido é o CPF solicitado.
     returned_cpf_selector = f"{_PFXO}lblCPF"
-    page.wait_for_function(
-        """([selector, expected]) => {
-            const element = document.querySelector(selector);
-            const returned = (element?.textContent || '').replace(/\\D/g, '');
-            return returned === expected;
-        }""",
-        arg=[returned_cpf_selector, normalized_cpf],
-        timeout=15_000,
-    )
+    try:
+        page.wait_for_function(
+            """([selector, expected]) => {
+                const element = document.querySelector(selector);
+                const returned = (element?.textContent || '').replace(/\\D/g, '');
+                return returned === expected;
+            }""",
+            arg=[returned_cpf_selector, normalized_cpf],
+            timeout=15_000,
+        )
+    except TimeoutError:
+        has_not_found_evidence = _has_explicit_not_found(page)
+        if (
+            isinstance(response_probe, dict)
+            and has_not_found_evidence
+            and (
+                not had_not_found_evidence
+                or _postback_observed(
+                    page,
+                    cpf_selector=cpf_selector,
+                    matricula_selector=matricula_selector,
+                    orgao_selector=orgao_selector,
+                    normalized_cpf=normalized_cpf,
+                    token=response_probe_token,
+                    previous=response_probe,
+                )
+            )
+        ):
+            raise RF1NotFound("Servidor não localizado pelo RF1.")
+        raise
 
     sel_nome = f"{_PFXO}lblNome"
     nome = page.locator(sel_nome)

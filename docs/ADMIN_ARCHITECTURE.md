@@ -1,110 +1,104 @@
-# Arquitetura alvo — painel e execução concorrente
+# Arquitetura administrativa e operacional
 
-## Princípios
+## Componentes
 
-- PostgreSQL é a fonte oficial de configuração, fila, progresso e resultados.
-- Excel é formato de importação e exportação, não banco operacional.
-- Um job representa uma base; cada CPF vira um item idempotente do job.
-- Cada credencial de portal recebe no máximo uma sessão simultânea por padrão.
-- Workers usam perfis de navegador isolados por credencial e lease.
-- Segredos só são entregues ao worker que possui lease, em resposta `no-store`,
-  e nunca são gravados em logs.
+1. **Backend FastAPI**: painel, autenticação, API, prontidão e autoridade da
+   fila.
+2. **PostgreSQL**: catálogo, bases, itens, tentativas, leases, resultados,
+   auditoria, workers e outbox.
+3. **GenericWorker**: laço comum de execução.
+4. **Adapters**: RF1, FACILCONSIG e CONSIGX.
+5. **Notification worker**: entrega durável, com semântica at-least-once.
+6. **Telegram controller**: interface do usuário; não executa navegador.
 
-## Modelos propostos
+## Limites de responsabilidade
 
-### Administração
+O backend decide se um job é executável a partir do estado do convênio, adapter,
+URLs, segredos, acessos, worker online, agenda, not_before e itens prontos.
 
-- `admin_users`: login, hash Argon2, papel (`admin`, `operator`, `viewer`), ativo e último acesso.
-- `api_tokens`: dono, prefixo público, hash do token, escopos, expiração e revogação.
-- `audit_logs`: ator, ação, entidade, identificador, IP, data e metadados sem segredos.
+O GenericWorker:
 
-### Catálogo e credenciais
+- anuncia saúde;
+- consulta jobs executable;
+- adquire acesso;
+- abre sessão pelo adapter;
+- reserva itens;
+- renova leases;
+- envia outcome ou requeue;
+- sempre fecha a sessão e libera acesso.
 
-- `platforms`: RF1, FácilConsig, SafeConsig, Grid e Consiglog.
-- `municipalities`: convênio/prefeitura, plataforma, URLs, janela e estado ativo.
-- `portal_credentials`: prefeitura, rótulo, usuário cifrado, senha cifrada, estado,
-  limite de sessões, falhas consecutivas, cooldown e última validação.
-- `integration_secrets`: Telegram, 2Captcha e outras integrações, com valor cifrado,
-  versão da chave e data da última rotação.
+O adapter não conhece banco, agenda, Excel, Telegram ou retry.
 
-Credenciais recuperáveis usam AES-GCM com uma chave mestre fora do banco
-(`APP_MASTER_KEY`). Tokens de acesso à API, que não precisam ser recuperados,
-são armazenados somente como hash e exibem apenas seu prefixo.
+## Domínio
 
-### Bases, fila e resultados
+- platforms representam processadoras;
+- municipalities representam convênios;
+- portal_credentials são acessos vinculados ao convênio;
+- datasets e dataset_records formam bases reutilizáveis;
+- automation_jobs e job_items formam a execução;
+- job_item_attempts preserva cada tentativa;
+- credential_leases impede sessão duplicada;
+- worker_heartbeats torna capacidade observável;
+- consultation_results_v2 guarda o envelope cifrado;
+- job_events_v2 forma a linha do tempo;
+- notification_outbox desacopla entrega externa;
+- audit_logs registra mudanças administrativas.
 
-- `datasets`: arquivo importado, prefeitura, quantidade, checksum e estado.
-- `dataset_records`: CPF cifrado, fingerprint HMAC para deduplicação, últimos quatro
-  dígitos e dados originais em `JSONB`.
-- `jobs`: base, prefeitura, prioridade, estado, totais e solicitante.
-- `job_items`: um registro consultável por job, tentativa, lease, estado e erro.
-- `credential_leases`: credencial, worker, heartbeat e expiração.
-- `consultation_results_v2`: item, credencial utilizada, estado e resultado
-  cifrado com AES-GCM.
-- `job_events`: histórico imutável de transições e mensagens operacionais.
+## Fluxo
 
-Restrições únicas em `(job_id, dataset_record_id)` e operações de `UPSERT` tornam
-retomadas idempotentes.
+1. arquivo é validado, normalizado e cifrado;
+2. base pronta inicia um job com um item por registro;
+3. worker se anuncia antes de consultar a fila;
+4. API marca o job executable ou explica o bloqueio;
+5. aquisição de acesso e claim usam locks transacionais;
+6. adapter confirma o identificador e classifica o retorno;
+7. backend persiste tentativa, resultado ou próximo retry;
+8. último item atualiza o estado do job;
+9. job final grava mensagem na outbox;
+10. notification worker cria o Excel e envia ao chat do pedido.
 
-## Concorrência com três usuários
+## Capacidade
 
-1. A base é normalizada uma vez e seus registros viram `job_items` pendentes.
-2. Cada worker reserva uma credencial disponível com
-   `SELECT ... FOR UPDATE SKIP LOCKED`.
-3. O worker cria um contexto Playwright isolado e reserva pequenos lotes de itens.
-4. Heartbeats renovam o lease; itens de workers mortos voltam à fila após expiração.
-5. Três credenciais ativas permitem três workers na mesma base sem consultar o
-   mesmo CPF duas vezes.
-6. Falhas de login colocam somente aquela credencial em cooldown; o job continua
-   com as demais.
+A concorrência real de um convênio nunca ultrapassa max_workers. Também é
+limitada por acessos utilizáveis, workers online e itens prontos. Uma trava no
+convênio serializa aquisição e evita abrir captchas excedentes quando resta
+apenas um item.
 
-Não se deve abrir três sessões com o mesmo usuário do portal sem validação. Muitos
-portais invalidam a sessão anterior; o padrão será uma sessão por credencial.
+## Falhas
 
-## Rotas implementadas
+- worker morto: lease expira, tentativa vira abandoned e item volta à fila;
+- timeout do portal: retryable_error com backoff;
+- credencial inválida: somente aquele acesso fica invalid;
+- portal ou integração indisponível: acesso entra em cooldown sem transformar
+  o item em não encontrado;
+- Telegram fora: outbox tenta novamente sem afetar o job;
+- alteração de seletor: adapter retorna retry, nunca not_found por silêncio.
 
-### Sessão e administração
+## Segurança
 
-- `GET/POST /login` e `POST /logout`
-- `GET/POST /admin/users`
-- `GET/POST /admin/tokens` e revogação
-- `GET/POST /admin/credentials` e ativação/desativação
-- `GET/POST /admin/secrets`
-- `GET/POST /admin/datasets`
-- `GET /admin/jobs` e `GET /admin/jobs/{id}/export.xlsx`
+Sessões do painel usam cookie seguro e CSRF. Senhas administrativas usam
+Argon2. Tokens de API usam hash e escopos. Bases, resultados e segredos usam
+AES-GCM com contexto. Respostas que entregam credencial ao worker usam
+Cache-Control no-store. Por decisão operacional, administradores podem conferir
+a senha de portal na tela de edição; tokens e segredos de integração continuam
+sem leitura no painel.
 
-### Operação
+Workers e Telegram não recebem DATABASE_URL nem APP_MASTER_KEY. Eles obtêm
+somente os segredos operacionais permitidos pelo próprio escopo em uma rota
+interna no-store; a rotação feita no painel é observada sem reiniciar o serviço.
 
-- `POST /api/jobs/batch`
-- `GET /api/jobs/status` e `GET /api/jobs/queue`
-- `POST /api/jobs/queue/clear` e `POST /api/jobs/running/stop`
-- `POST /api/workers/credentials/acquire` e relatório de saúde
-- `POST /api/workers/items/claim` e conclusão
-- `POST /api/workers/heartbeat` e liberação
+## Operação
 
-## Painel mínimo
+Telas:
 
-- Login.
-- Dashboard com jobs, progresso e falhas.
-- Bases: upload, validação e início de job.
-- Credenciais: cadastro, ativação e cooldown automático; nunca mostrar senha.
-- Usuários e tokens: criação, papéis, escopos e revogação.
-- Job: itens processados, falhas e exportação.
+- Visão geral: prontidão e jobs recentes;
+- Execuções: progresso e controles;
+- Eventos: diagnóstico;
+- Envios: Telegram e retry;
+- Bases: importação e reutilização;
+- Robôs e regras: catálogo, entrada, agenda e capacidade;
+- Acessos aos portais: pool por convênio;
+- Usuários, Tokens e Integrações: administração.
 
-Próximos incrementos do painel: teste manual de credencial, edição de convênios,
-velocidade/ETA, erros agrupados e ações individuais de cancelar/retentar.
-
-FastAPI, SQLAlchemy 2, Alembic e templates Jinja/HTMX são suficientes para esse
-painel interno sem investir em um frontend separado.
-
-## Estado de implementação
-
-1. Cadastro central, modelos SQLAlchemy e migration PostgreSQL: concluídos.
-2. Autenticação, tokens, cofre cifrado e auditoria: concluídos.
-3. Datasets, jobs, itens, leases e exportação cifrada: concluídos.
-4. Worker Boa Vista no contrato transacional: implementado; falta homologação
-   real na VPS com credenciais válidas e uma base pequena.
-5. Concorrência: protegida por leases e `SKIP LOCKED`; falta teste integrado com
-   PostgreSQL real e três logins do portal.
-6. Itabuna/Consiglog: separado e pendente de revalidação do novo site.
-7. Demais runners: migração incremental após Boa Vista estabilizar.
+Consulte BUSINESS_RULES.md para as regras funcionais e ADAPTER_CONTRACT.md para
+novos portais.

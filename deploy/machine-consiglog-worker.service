@@ -2,14 +2,38 @@
 Description=Machine ConsigX worker pool
 After=network-online.target machine-backend.service
 Requires=machine-backend.service
+PartOf=machine-scheduler.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=/root/ROBO_FACIL
-ExecStart=/root/ROBO_FACIL/env/bin/python -u run_worker.py consiglog --workers 1
+User=machine-worker
+Group=machine-worker
+WorkingDirectory=/opt/machine/current
+EnvironmentFile=/opt/machine/shared/env/worker.env
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/opt/machine/shared/home/machine-worker
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/machine/shared/playwright
+ExecStartPre=/usr/bin/test -x /opt/machine/current/.venv/bin/python
+ExecStart=/opt/machine/current/.venv/bin/python -u run_worker.py consiglog
 Restart=always
 RestartSec=5
-Environment=PYTHONUNBUFFERED=1
+TimeoutStopSec=900
+KillSignal=SIGTERM
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+InaccessiblePaths=/opt/machine/shared/.env /opt/machine/shared/env
+ReadWritePaths=/opt/machine/shared/storage /opt/machine/shared/job_logs /opt/machine/shared/data /opt/machine/shared/temp /opt/machine/shared/completed /opt/machine/shared/debug_captchas /opt/machine/shared/playwright /opt/machine/shared/home/machine-worker
 
 [Install]
 WantedBy=multi-user.target

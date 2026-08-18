@@ -1,47 +1,59 @@
 # Checkpoint e pendências
 
-## Entregue neste checkpoint
+## Entregue
 
-- Painel administrativo FastAPI com login, papéis, usuários e auditoria.
-- Tokens de API com hash, escopos e revogação.
-- Cofre AES-GCM para integrações e credenciais de portais.
-- PostgreSQL obrigatório e migration Alembic inicial.
-- Bases, CPFs, linhas de origem e resultados cifrados.
-- Jobs e itens idempotentes com leases, heartbeat e `SKIP LOCKED`.
-- Pool RF1/Boa Vista com até três credenciais sobre a mesma base.
-- Exportação XLSX sob demanda, sem manter resultado aberto em disco.
-- Um único adaptador e um único token operacional do Telegram.
-- Fênix removido; backend SQLite e scheduler legado removidos.
-- Deploy sem encerramento automático de processos e unidades systemd atualizadas.
-- Itabuna identificado corretamente como ConsigX/Consiglog separado.
+- domínio explícito de processadora, convênio, prontidão, entrada e agenda;
+- GenericWorker único para RF1, FACIL e ConsigX;
+- outcomes canônicos com confirmação de CPF/matrícula;
+- tentativas persistentes, backoff, leases e heartbeat de workers;
+- SAFE, Grid e EasyConsig bloqueados até adapter transacional;
+- bases reutilizáveis com CPF validado e política de duplicidade;
+- exportação com namespaces estáveis, sem sobrescrever dados de origem;
+- job com pausar, interromper, retomar e tentar novamente;
+- um único bot Telegram, sempre com base explícita;
+- outbox de Telegram com retry e tela de Envios;
+- painel de Robôs e regras, prontidão explicável e ações auditadas;
+- usuários ativáveis, papéis, reset de senha e tokens com expiração;
+- migration 0006 aditiva, preservando dados existentes.
 
-## Bloqueios para homologação em produção
+## Antes de homologar na VPS
 
-- Criar um PostgreSQL limpo na VPS e aplicar `alembic upgrade head`.
-- Configurar `APP_MASTER_KEY`, segredo de sessão, domínio e proxy HTTPS.
-- Criar os tokens internos do Telegram e dos workers com escopos mínimos.
-- Cadastrar de um a três logins válidos de Boa Vista no painel.
-- Executar smoke test com poucos CPFs e depois a base completa de 63 registros.
-- Validar concorrência real com três contas e comportamento de sessão do RF1.
-- Configurar backup conjunto do PostgreSQL, `storage/` e chave mestre.
+1. fazer backup consistente do PostgreSQL, storage e .env;
+2. aplicar alembic upgrade head;
+3. instalar e habilitar pools RF1, FACIL, ConsigX e notificações exatamente uma
+   vez cada;
+4. confirmar WORKER_API_TOKEN, BACKEND_API_TOKEN, Telegram e 2Captcha;
+5. validar /health e a presença dos workers no painel;
+6. executar smoke pequeno de Boa Vista, GOV AM e Paulista;
+7. revisar manualmente dez retornos e a planilha exportada de cada adapter;
+8. testar um envio Telegram e seu reprocessamento;
+9. monitorar logs, CPU, memória e consumo de captcha.
 
-## Próximas implementações
+## Homologações de portal ainda necessárias
 
-- Teste manual de credencial e edição de convênios pelo painel.
-- ETA, velocidade, workers ativos e agrupamento de erros no dashboard.
-- Cancelamento e retry individual de jobs/itens.
-- Política de retenção e expurgo auditável de bases e resultados.
-- Rotação versionada da chave mestre.
-- Adaptar SafeConsig, FácilConsig e Grid ao contrato transacional de workers.
-- Homologar uma consulta de Itabuna que retorne dados, para confirmar todos os
-  campos de margem antes de iniciar lote de produção.
-- Decidir a remoção dos três arquivos históricos de dados ainda versionados.
+- Boa Vista: confirmar evidência negativa explícita em um CPF inexistente.
+- GOV AM e Paulista: confirmar a evidência negativa explícita e os nomes de
+  todas as margens.
+- Itabuna: revalidar CPF confirmado após postback e manter estado testing até
+  dez consultas revisadas.
+- SAFE: implementar adapter transacional do zero.
+- Grid: implementar adapter transacional do zero.
 
-## Decisões mantidas
+## Backlog técnico
 
-- Itabuna não compartilha o worker de Boa Vista.
-- Uma sessão simultânea por credencial de portal é o padrão seguro.
-- Excel é somente entrada/saída; PostgreSQL é a fonte de verdade.
-- O recurso remoto noVNC/ngrok permanece inalterado por decisão do projeto.
-- Segredos divulgados durante a implementação devem ser rotacionados antes da
-  homologação em produção.
+- teste de integração da fila contra PostgreSQL real;
+- métricas e alertas externos para workers, retries e outbox;
+- política de retenção/expurgo auditável;
+- rotação versionada da APP_MASTER_KEY;
+- remover runners históricos depois da homologação dos adapters;
+- testes de navegador gravados por portal para detectar mudança de seletor.
+
+## Decisões
+
+- um acesso de portal representa uma sessão simultânea;
+- PostgreSQL é a fonte oficial; Excel é entrada e saída;
+- o banco, não o catálogo Python, é a fonte das regras editáveis;
+- o backend, não o worker, decide agenda, retry e executabilidade;
+- not_found exige evidência do portal;
+- resultado Telegram sempre usa o chat associado ao pedido;
+- credenciais e tokens divulgados fora do cofre devem ser rotacionados.

@@ -1,34 +1,52 @@
+{% from "_ui.html" import role_badge %}
 <!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Machine Admin{% endblock %}</title>
+  <meta name="color-scheme" content="light">
+  <meta name="application-name" content="Machine Admin · Central de Robôs">
+  <title>{% block title %}Central de Robôs{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  <script defer src="{{ url_for('static', path='/app.js') }}"></script>
 </head>
 <body>
   {% if user %}
   <header class="topbar">
-    <a class="brand" href="/">Machine Admin</a>
-    <nav>
-      <a href="/admin/jobs">Jobs</a>
-      <a href="/admin/logs">Logs</a>
-      <a href="/admin/datasets">Bases</a>
-      <a href="/admin/credentials">Credenciais</a>
+    <a class="brand" href="/" aria-label="Ir para a visão geral"><span class="brand-mark">M</span><span>Central de Robôs</span></a>
+    <nav aria-label="Navegação principal">
+      <a class="{{ 'current' if request.url.path == '/' else '' }}" href="/">Visão geral</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/jobs') else '' }}" href="/admin/jobs">Execuções</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/logs') else '' }}" href="/admin/logs">Eventos</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/notifications') else '' }}" href="/admin/notifications">Envios</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/datasets') else '' }}" href="/admin/datasets">Bases</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/agreements') else '' }}" href="/admin/agreements">Robôs e regras</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/credentials') else '' }}" href="/admin/credentials">Acessos aos portais</a>
       {% if user.role == 'admin' %}
-      <a href="/admin/users">Usuários</a>
-      <a href="/admin/tokens">Tokens</a>
-      <a href="/admin/secrets">Segredos</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/users') else '' }}" href="/admin/users">Usuários</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/tokens') else '' }}" href="/admin/tokens">Tokens</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/secrets') else '' }}" href="/admin/secrets">Integrações</a>
       {% endif %}
     </nav>
+    <div class="user-menu"><span><strong>{{ user.display_name }}</strong>{{ role_badge(user.role) }}</span>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="ghost" type="submit">Sair</button>
-    </form>
+    </form></div>
   </header>
   {% endif %}
   <main class="container {% if not user %}narrow{% endif %}">
-    {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+    {% if flash %}
+      {% set flash_text = flash.message if flash.message is defined else flash|string %}
+      {% set flash_lower = flash_text|lower %}
+      {% set flash_error = flash.level|default('') == 'error' or 'erro' in flash_lower or 'inválid' in flash_lower or 'inval' in flash_lower or 'falha' in flash_lower or 'conflit' in flash_lower or 'indisponível' in flash_lower %}
+      {% set flash_warning = flash.level|default('') == 'warning' or 'ignorada' in flash_lower or 'pausad' in flash_lower or 'interrompid' in flash_lower or 'reenfileir' in flash_lower or 'aguard' in flash_lower %}
+      {% set flash_level = 'error' if flash_error else ('warning' if flash_warning else 'success') %}
+      <div class="flash {{ flash_level }}" role="status">
+        <strong>{{ 'Não foi possível concluir' if flash_level == 'error' else ('Atenção' if flash_level == 'warning' else 'Tudo certo') }}</strong>
+        <span>{{ flash_text }}</span>
+      </div>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>

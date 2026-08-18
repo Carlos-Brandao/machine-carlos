@@ -2,14 +2,36 @@
 Description=Machine Admin and API
 After=network-online.target postgresql.service
 Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=/root/ROBO_FACIL
-ExecStart=/root/ROBO_FACIL/env/bin/python -u run_backend_api.py
+User=machine-backend
+Group=machine-backend
+WorkingDirectory=/opt/machine/current
+EnvironmentFile=/opt/machine/shared/env/backend.env
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/opt/machine/shared/home/machine-backend
+Environment=MACHINE_STORAGE_DIR=/opt/machine/shared/storage
+ExecStartPre=/usr/bin/test -x /opt/machine/current/.venv/bin/python
+ExecStart=/opt/machine/current/.venv/bin/python -u run_backend_api.py
 Restart=always
 RestartSec=5
-Environment=PYTHONUNBUFFERED=1
+TimeoutStopSec=120
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+InaccessiblePaths=/opt/machine/shared/.env /opt/machine/shared/env
+ReadWritePaths=/opt/machine/shared/storage /opt/machine/shared/job_logs /opt/machine/shared/data /opt/machine/shared/temp /opt/machine/shared/completed
 
 [Install]
 WantedBy=multi-user.target

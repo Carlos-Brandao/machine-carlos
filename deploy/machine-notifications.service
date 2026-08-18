@@ -1,0 +1,37 @@
+[Unit]
+Description=Machine notification outbox worker
+After=network-online.target machine-backend.service
+Requires=machine-backend.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=machine-notify
+Group=machine-notify
+WorkingDirectory=/opt/machine/current
+EnvironmentFile=/opt/machine/shared/env/notifications.env
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/opt/machine/shared/home/machine-notify
+Environment=MACHINE_STORAGE_DIR=/opt/machine/shared/storage
+ExecStartPre=/usr/bin/test -x /opt/machine/current/.venv/bin/python
+ExecStart=/opt/machine/current/.venv/bin/python -u run_notification_worker.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=120
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+InaccessiblePaths=/opt/machine/shared/.env /opt/machine/shared/env
+ReadWritePaths=/opt/machine/shared/storage /opt/machine/shared/job_logs /opt/machine/shared/completed
+
+[Install]
+WantedBy=multi-user.target

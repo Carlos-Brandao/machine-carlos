@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -28,26 +28,43 @@ from services.registry import MUNICIPALITIES, PLATFORMS
 
 
 def sync_catalog(session: Session) -> None:
+    """Semeia o catálogo inicial sem substituir decisões operacionais do banco.
+
+    Depois da primeira criação, URLs, prontidão, limites e versões passam a ser
+    configuração persistente. Isso evita que um restart desfaça uma pausa ou
+    uma correção realizada por operação/migração.
+    """
     for definition in PLATFORMS.values():
-        platform = session.get(Platform, definition.slug) or Platform(slug=definition.slug)
-        platform.name = definition.name
-        platform.runner = definition.runner
-        platform.start_hour = definition.start_hour
-        platform.end_hour = definition.end_hour
-        platform.enabled = definition.enabled
-        session.add(platform)
+        if session.get(Platform, definition.slug) is None:
+            session.add(
+                Platform(
+                    slug=definition.slug,
+                    name=definition.name,
+                    runner=definition.runner,
+                    start_hour=definition.start_hour,
+                    end_hour=definition.end_hour,
+                    enabled=definition.enabled,
+                )
+            )
     session.flush()
     for definition in MUNICIPALITIES.values():
-        municipality = session.get(Municipality, definition.slug) or Municipality(
-            slug=definition.slug
-        )
-        municipality.name = definition.name
-        municipality.platform_slug = definition.platform_slug
-        municipality.login_url = definition.login_url
-        municipality.query_url = definition.query_url
-        municipality.max_workers = definition.max_workers
-        municipality.enabled = definition.enabled
-        session.add(municipality)
+        if session.get(Municipality, definition.slug) is None:
+            session.add(
+                Municipality(
+                    slug=definition.slug,
+                    name=definition.name,
+                    platform_slug=definition.platform_slug,
+                    login_url=definition.login_url,
+                    query_url=definition.query_url,
+                    max_workers=definition.max_workers,
+                    enabled=definition.enabled,
+                    operational_status=definition.operational_status,
+                    timezone=definition.timezone,
+                    input_schema=definition.input_schema,
+                    schedule_policy=definition.schedule_policy,
+                    adapter_version=definition.adapter_version,
+                )
+            )
     session.commit()
 
 
@@ -116,6 +133,7 @@ def issue_api_token(
     owner_id: int,
     name: str,
     scopes: list[str],
+    expires_in_days: int | None = 365,
 ) -> tuple[ApiToken, str]:
     name = name.strip()
     allowed_scopes = {"jobs:read", "jobs:write", "workers:execute"}
@@ -124,6 +142,8 @@ def issue_api_token(
         raise ValueError("Nome do token é obrigatório.")
     if not normalized_scopes or not set(normalized_scopes) <= allowed_scopes:
         raise ValueError("Escopos do token são inválidos.")
+    if expires_in_days is not None and not 1 <= expires_in_days <= 3650:
+        raise ValueError("A validade deve ficar entre 1 e 3650 dias.")
     raw_token, prefix, token_hash = generate_api_token()
     token = ApiToken(
         owner_id=owner_id,
@@ -131,6 +151,11 @@ def issue_api_token(
         token_prefix=prefix,
         token_hash=token_hash,
         scopes=normalized_scopes,
+        expires_at=(
+            datetime.now(UTC) + timedelta(days=expires_in_days)
+            if expires_in_days is not None
+            else None
+        ),
     )
     session.add(token)
     session.flush()
@@ -145,15 +170,23 @@ def create_portal_credential(
     label: str,
     username: str,
     password: str,
-    consignataria: str,
+    consignataria: str | None = None,
+    portal_profile: str | None = None,
 ) -> PortalCredential:
     municipality = session.get(Municipality, municipality_slug)
     if not municipality:
         raise ValueError("Convênio não encontrado.")
     label = label.strip()
-    consignataria = consignataria.strip()
-    if not label or not username.strip() or not password or not consignataria:
-        raise ValueError("Rótulo, usuário, senha e consignatária são obrigatórios.")
+    legacy_profile = (consignataria or "").strip() or None
+    profile = (
+        (portal_profile if portal_profile is not None else consignataria) or ""
+    ).strip() or None
+    if not label or not username.strip() or not password:
+        raise ValueError("Rótulo, usuário e senha são obrigatórios.")
+    if len(label) > 120:
+        raise ValueError("A identificação deve ter no máximo 120 caracteres.")
+    if profile and len(profile) > 160:
+        raise ValueError("O perfil no portal deve ter no máximo 160 caracteres.")
     context_id = secrets.token_hex(16)
     cipher = SecretCipher(settings.master_key)
     credential = PortalCredential(
@@ -168,10 +201,14 @@ def create_portal_credential(
         ),
         portal_username=username.strip(),
         portal_password=password,
-        consignataria=consignataria,
+        consignataria=legacy_profile or profile,
+        portal_profile=profile,
         status="active",
         max_parallel_sessions=1,
-        settings_json={"consignataria": consignataria},
+        settings_json={
+            "consignataria": legacy_profile or profile,
+            "portal_profile": profile,
+        },
     )
     session.add(credential)
     session.flush()
@@ -186,26 +223,55 @@ def update_portal_credential(
     label: str,
     username: str,
     password: str,
-    consignataria: str,
+    consignataria: str | None = None,
+    portal_profile: str | None = None,
 ) -> PortalCredential:
-    label, consignataria = label.strip(), consignataria.strip()
-    if not label or not consignataria:
-        raise ValueError("Identificação e consignatária são obrigatórias.")
+    label = label.strip()
+    if not label:
+        raise ValueError("Identificação é obrigatória.")
+    if len(label) > 120:
+        raise ValueError("A identificação deve ter no máximo 120 caracteres.")
     credential.label = label
-    credential.consignataria = consignataria
-    credential.settings_json = {**credential.settings_json, "consignataria": consignataria}
+    access_changed = False
+    profile_was_supplied = portal_profile is not None or consignataria is not None
+    if profile_was_supplied:
+        legacy_profile = (consignataria or "").strip() or None
+        profile = (
+            (portal_profile if portal_profile is not None else consignataria) or ""
+        ).strip() or None
+        if profile and len(profile) > 160:
+            raise ValueError("O perfil no portal deve ter no máximo 160 caracteres.")
+        access_changed = profile != credential.portal_profile
+        credential.portal_profile = profile
+        credential.consignataria = legacy_profile or profile
+        credential.settings_json = {
+            **credential.settings_json,
+            "consignataria": legacy_profile or profile,
+            "portal_profile": profile,
+        }
     cipher = SecretCipher(settings.master_key)
     context_id = credential.encryption_context
     if username.strip():
-        credential.portal_username = username.strip()
+        normalized_username = username.strip()
+        access_changed = access_changed or normalized_username != credential.portal_username
+        credential.portal_username = normalized_username
         credential.username_ciphertext = cipher.encrypt(
-            username.strip(), context=f"portal:{context_id}:username"
+            normalized_username, context=f"portal:{context_id}:username"
         )
     if password:
+        access_changed = access_changed or password != credential.portal_password
         credential.portal_password = password
         credential.password_ciphertext = cipher.encrypt(
             password, context=f"portal:{context_id}:password"
         )
+    if access_changed:
+        # Uma correção de usuário/senha/perfil precisa ser testada no próximo
+        # lease; manter ``invalid`` ou cooldown tornaria a edição inócua.
+        credential.status = "active"
+        credential.failure_count = 0
+        credential.cooldown_until = None
+        credential.last_error = None
+        credential.last_validated_at = None
     session.flush()
     return credential
 

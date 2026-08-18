@@ -1,0 +1,72 @@
+{% macro status_badge(value) -%}
+  {% set status = value or 'unknown' %}
+  {% set labels = {
+    'active': 'Ativa',
+    'disabled': 'Desativada',
+    'cooldown': 'Em espera',
+    'invalid': 'Inválida',
+    'uploading': 'Importando',
+    'ready': 'Pronta',
+    'archived': 'Arquivada',
+    'awaiting_dataset': 'Aguardando base',
+    'queued': 'Na fila',
+    'running': 'Em execução',
+    'paused': 'Pausado',
+    'completed': 'Concluído',
+    'completed_with_errors': 'Concluído com alertas',
+    'blocked': 'Bloqueado',
+    'failed': 'Com falhas',
+    'cancelled': 'Interrompido',
+    'pending': 'Pendente',
+    'processing': 'Enviando',
+    'retry': 'Nova tentativa',
+    'sent': 'Enviado',
+    'leased': 'Em consulta',
+    'unknown': 'Desconhecido'
+  } %}
+  <span class="status {{ status|replace('_', '-') }}">{{ labels.get(status, status|replace('_', ' ')|title) }}</span>
+{%- endmacro %}
+
+{% macro role_badge(value) -%}
+  {% set labels = {'admin': 'Administrador', 'operator': 'Operador', 'viewer': 'Visualizador'} %}
+  <span class="role-badge">{{ labels.get(value, value|title) }}</span>
+{%- endmacro %}
+
+{% macro progress(job) -%}
+  {% set total = job.total_items or 0 %}
+  {% set completed = job.completed_items or 0 %}
+  {% set failed = job.failed_items or 0 %}
+  {% set processed = completed + failed %}
+  {% set percentage = ((processed * 100 / total)|round(0, 'floor')|int) if total else 0 %}
+  <div class="progress-block" aria-label="{{ processed }} de {{ total }} processados">
+    <div class="progress-track"><span style="width: {{ percentage }}%"></span></div>
+    <div class="progress-copy"><strong>{{ percentage }}%</strong><span>{{ processed }} de {{ total }}</span></div>
+  </div>
+{%- endmacro %}
+
+{% macro event_badge(value) -%}
+  {% set event = value or 'evento' %}
+  {% set is_error = 'erro' in event or 'error' in event or 'indisponivel' in event %}
+  {% set is_warning = 'reenfileir' in event or 'pending' in event or 'pause' in event or 'cancel' in event %}
+  {% set is_success = 'concluida' in event or 'sent' in event or 'success' in event %}
+  {% set labels = {
+    'consulta.concluida': 'Consulta concluída',
+    'consulta.erro': 'Erro na consulta',
+    'consulta.reenfileirada': 'Consulta devolvida à fila',
+    'credencial.erro': 'Erro de credencial',
+    'portal.indisponivel': 'Portal indisponível',
+    'dataset_attached': 'Base vinculada',
+    'created': 'Job criado',
+    'job.pause': 'Job pausado',
+    'job.resume': 'Job retomado',
+    'job.cancel': 'Job interrompido',
+    'job.retry': 'Nova tentativa',
+    'telegram.document.pending': 'Envio ao Telegram pendente',
+    'telegram.document.sent': 'Arquivo enviado ao Telegram',
+    'telegram.document.error': 'Falha no Telegram',
+    'notification.queued': 'Envio agendado',
+    'notification.sent': 'Resultado enviado',
+    'notification.error': 'Falha no envio'
+  } %}
+  <span class="event-badge {{ 'error' if is_error else ('warning' if is_warning else ('success' if is_success else 'neutral')) }}">{{ labels.get(event, event|replace('.', ' · ')|replace('_', ' ')) }}</span>
+{%- endmacro %}

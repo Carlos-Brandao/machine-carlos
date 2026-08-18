@@ -1,15 +1,25 @@
 [Unit]
-Description=Machine worker scheduler
+Description=Machine worker pools
 After=network-online.target machine-backend.service
 Requires=machine-backend.service
+Wants=machine-rf1-worker.service machine-facil-worker.service machine-consiglog-worker.service
+After=machine-rf1-worker.service machine-facil-worker.service machine-consiglog-worker.service
 
 [Service]
-Type=simple
-WorkingDirectory=/root/ROBO_FACIL
-ExecStart=/root/ROBO_FACIL/env/bin/python -u run_scheduler.py
-Restart=always
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
+Type=oneshot
+User=machine-worker
+Group=machine-worker
+ExecStart=/bin/true
+RemainAfterExit=yes
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target
