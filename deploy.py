@@ -598,7 +598,8 @@ as_account machine-backend env HOME="$root/shared/home/machine-backend" \\
 # Os valores brutos de tokens não podem ser recuperados do hash no banco.
 # Crie identidades próprias quando a instalação legada não preservou o valor
 # ou usava um token sem o escopo necessário. Nenhum valor é impresso.
-"$release/.venv/bin/python" "$release/scripts/ensure_service_tokens.py" \\
+env PYTHONPATH="$release" \\
+  "$release/.venv/bin/python" "$release/scripts/ensure_service_tokens.py" \\
   --env-file "$root/shared/.env"
 chown root:"$service_group" "$root/shared/.env"
 chmod 0640 "$root/shared/.env"
