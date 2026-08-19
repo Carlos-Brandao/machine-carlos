@@ -6,6 +6,7 @@ import sys
 import threading
 import traceback
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -46,6 +47,14 @@ class SearchResponseUnconfirmed(RuntimeError):
     """A busca terminou sem resultado e sem evidência negativa explícita."""
 
 
+@dataclass(frozen=True, slots=True)
+class SearchResult:
+    """Resultado da busca e regra efetivamente exibida pelo portal."""
+
+    found: bool
+    registration_required: bool
+
+
 def _fold_text(value: object) -> str:
     normalized = unicodedata.normalize("NFKD", str(value or ""))
     return normalized.encode("ascii", "ignore").decode("ascii").casefold()
@@ -60,6 +69,8 @@ async def _explicit_not_found(page: Page) -> bool:
             "servidor nao localizado",
             "cpf nao encontrado",
             "nao foi encontrado servidor",
+            "nenhum resultado encontrado",
+            "cpf incorreto",
         )
     )
 
@@ -256,7 +267,9 @@ async def _login(
     return False
 
 
-async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
+async def _buscar_result(
+    page: Page, base_url: str, matricula: str, cpf: str
+) -> SearchResult:
     busca_url = f"{base_url}/controlador.php?pagina=busca_servidor_consignatario.php"
 
     # Paulista exige matrícula + CPF, enquanto GOV AM disponibiliza apenas
@@ -301,9 +314,9 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
         await page.wait_for_timeout(800)
 
         if await page.locator("table.table-consig tbody tr td a").count() > 0:
-            return True
+            return SearchResult(found=True, registration_required=has_matricula)
         if await _explicit_not_found(page):
-            return False
+            return SearchResult(found=False, registration_required=has_matricula)
 
         await page.goto(busca_url, wait_until="domcontentloaded", timeout=20_000)
         await page.wait_for_timeout(1_500)
@@ -313,6 +326,12 @@ async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
     raise SearchResponseUnconfirmed(
         "O FACILCONSIG não confirmou resultado nem servidor inexistente."
     )
+
+
+async def _buscar(page: Page, base_url: str, matricula: str, cpf: str) -> bool:
+    """Compatibilidade do runner legado; adapters usam o resultado detalhado."""
+
+    return (await _buscar_result(page, base_url, matricula, cpf)).found
 
 
 async def _extrair(page: Page) -> dict:

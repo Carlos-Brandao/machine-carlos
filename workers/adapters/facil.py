@@ -15,7 +15,7 @@ from playwright.async_api import async_playwright
 from facil.facil import (
     SearchFormUnavailable,
     SearchResponseUnconfirmed,
-    _buscar,
+    _buscar_result,
     _extrair,
     check_login_success,
 )
@@ -134,13 +134,13 @@ class FacilSession:
 
     async def _consult(self, item: WorkItem) -> ExecutionOutcome:
         assert self.page is not None
-        found = await _buscar(
+        search = await _buscar_result(
             self.page,
             self.base_url,
             item.registration or "",
             item.cpf,
         )
-        if not found:
+        if not search.found:
             return ExecutionOutcome.not_found(requested=item.requested)
 
         raw = await _extrair(self.page)
@@ -171,7 +171,8 @@ class FacilSession:
         expected_registration = _registration(item.registration)
         returned_registration = _registration(returned_registration_raw)
         if (
-            expected_registration
+            search.registration_required
+            and expected_registration
             and returned_registration != expected_registration
         ):
             raise AdapterError(
@@ -188,8 +189,13 @@ class FacilSession:
         margins = {
             key: value for key, value in raw.items() if key.lower().startswith("margem |")
         }
+        requested = (
+            item.requested
+            if search.registration_required
+            else {"cpf": item.cpf, "registration": None}
+        )
         return ExecutionOutcome.found(
-            requested=item.requested,
+            requested=requested,
             confirmed={
                 "cpf": returned_cpf,
                 "registration": returned_registration_raw or None,

@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import requests
 
-from facil.facil import SearchResponseUnconfirmed
+from facil.facil import SearchResponseUnconfirmed, SearchResult, _explicit_not_found
 from rf1.rf1 import RF1NotFound
 from services.captcha import CaptchaError
 from services.execution import ExecutionOutcome, OutcomeKind
-from workers.adapters.facil import _login_without_side_effects
+from workers.adapters.facil import FacilSession, _login_without_side_effects
 from workers.api_client import WorkerAPIClient, WorkerAPIConflict, WorkerAPIError
-from workers.engine import CredentialPayload, GenericWorker, WorkItem
+from workers.engine import AdapterError, CredentialPayload, GenericWorker, WorkItem
 from workers.consiglog_worker import ConsiglogWorker
 from workers.facil_worker import FacilWorker
 from workers.registry import (
@@ -243,6 +243,70 @@ class FacilAdapterLoginTests(unittest.IsolatedAsyncioTestCase):
                     page, "https://facil", "user", "pass"
                 )
             )
+
+    async def test_gov_am_negative_messages_are_terminal_not_found_evidence(self) -> None:
+        for message in (
+            "CPF incorreto. Favor verificar",
+            "Nenhum resultado encontrado para a pesquisa solicitada",
+        ):
+            with self.subTest(message=message):
+                page = Mock()
+                body = Mock()
+                body.inner_text = AsyncMock(return_value=message)
+                page.locator.return_value = body
+                self.assertTrue(await _explicit_not_found(page))
+
+    async def test_registration_is_optional_when_search_form_has_no_registration(self) -> None:
+        session = FacilSession.__new__(FacilSession)
+        session.page = AsyncMock()
+        session.base_url = "https://facil/amazonas"
+        raw = {
+            "Dados | CPF": "012.345.678-90",
+            "Dados | Matrícula": "OUTRA",
+            "Margem | Consignável": "R$ 10,00",
+        }
+        with (
+            patch(
+                "workers.adapters.facil._buscar_result",
+                new=AsyncMock(
+                    return_value=SearchResult(
+                        found=True,
+                        registration_required=False,
+                    )
+                ),
+            ),
+            patch("workers.adapters.facil._extrair", new=AsyncMock(return_value=raw)),
+        ):
+            outcome = await session._consult(
+                WorkItem(item_id=1, cpf="01234567890", registration="SOLICITADA")
+            )
+        self.assertEqual(OutcomeKind.FOUND, outcome.kind)
+        self.assertIsNone(outcome.requested["registration"])
+
+    async def test_registration_remains_required_when_portal_searches_by_it(self) -> None:
+        session = FacilSession.__new__(FacilSession)
+        session.page = AsyncMock()
+        session.base_url = "https://facil/paulista"
+        raw = {
+            "Dados | CPF": "012.345.678-90",
+            "Dados | Matrícula": "OUTRA",
+        }
+        with (
+            patch(
+                "workers.adapters.facil._buscar_result",
+                new=AsyncMock(
+                    return_value=SearchResult(
+                        found=True,
+                        registration_required=True,
+                    )
+                ),
+            ),
+            patch("workers.adapters.facil._extrair", new=AsyncMock(return_value=raw)),
+        ):
+            with self.assertRaisesRegex(AdapterError, "matrícula solicitada"):
+                await session._consult(
+                    WorkItem(item_id=1, cpf="01234567890", registration="SOLICITADA")
+                )
 
 
 class GenericWorkerTests(unittest.TestCase):
