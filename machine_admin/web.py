@@ -50,6 +50,7 @@ from machine_admin.models import (
 )
 from machine_admin.notifications import enqueue_job_result
 from machine_admin.queue import (
+    RETRYABLE_OUTCOMES,
     acquire_credential,
     claim_job_items,
     complete_job_item,
@@ -1553,10 +1554,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if isinstance(user, RedirectResponse):
             return user
         jobs = list(session.scalars(select(Job).order_by(Job.created_at.desc()).limit(200)))
+        job_ids = [job.id for job in jobs]
+        retryable_pending_by_job: dict[int, int] = {}
+        retryable_failed_by_job: dict[int, int] = {}
+        if job_ids:
+            retryable_rows = session.execute(
+                select(JobItem.job_id, JobItem.status, func.count(JobItem.id))
+                .where(
+                    JobItem.job_id.in_(job_ids),
+                    JobItem.outcome.in_(RETRYABLE_OUTCOMES),
+                )
+                .group_by(JobItem.job_id, JobItem.status)
+            )
+            for job_id, item_status, count in retryable_rows:
+                if item_status == "failed":
+                    retryable_failed_by_job[int(job_id)] = int(count)
+                elif item_status in {"pending", "leased"}:
+                    retryable_pending_by_job[int(job_id)] = (
+                        retryable_pending_by_job.get(int(job_id), 0) + int(count)
+                    )
         return TEMPLATES.TemplateResponse(
             request=request,
             name="jobs.html",
-            context=page_context(request, user, jobs=jobs),
+            context=page_context(
+                request,
+                user,
+                jobs=jobs,
+                retryable_pending_by_job=retryable_pending_by_job,
+                retryable_failed_by_job=retryable_failed_by_job,
+            ),
         )
 
     @app.get("/admin/logs", response_class=HTMLResponse)
