@@ -122,6 +122,20 @@ class ExportContractTests(unittest.TestCase):
             {"CPF": "529.982.247-25", "MARGEM_CONSIGNAVEL": 500.0}, merged
         )
 
+    def test_requested_identifiers_are_not_repeated_in_canonical_export(self) -> None:
+        exported = flatten_result(
+            {
+                "outcome": "found",
+                "requested": {"cpf": "52998224725", "registration": "AB-01"},
+                "confirmed": {"cpf": "52998224725", "registration": "AB-01"},
+            }
+        )
+
+        self.assertNotIn("SOLICITADO_CPF", exported)
+        self.assertNotIn("SOLICITADO_REGISTRATION", exported)
+        self.assertEqual("52998224725", exported["CONFIRMADO_CPF"])
+        self.assertEqual("AB-01", exported["CONFIRMADO_REGISTRATION"])
+
     def test_different_source_and_output_are_both_preserved(self) -> None:
         merged = merge_export_columns(
             {"MARGEM_CONSIGNAVEL": 450}, {"MARGEM_CONSIGNAVEL": 500}

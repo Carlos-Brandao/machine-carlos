@@ -158,8 +158,11 @@ def _flatten_canonical_result(result: Mapping[str, Any]) -> dict[str, Any]:
     if outcome is not None:
         exported["Resultado"] = _scalar(outcome)
 
+    # ``requested`` reproduz CPF/matrícula da própria base importada. Exportá-lo
+    # criava uma segunda ou terceira cópia do mesmo identificador. O confirmado
+    # continua disponível quando o portal efetivamente divergir da origem, pois
+    # essa diferença é informação de auditoria, não duplicação.
     for section, prefix in (
-        ("requested", "SOLICITADO"),
         ("confirmed", "CONFIRMADO"),
         ("person", "SERVIDOR"),
     ):
