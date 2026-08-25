@@ -28,7 +28,10 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from machine_admin.config import Settings
 from machine_admin.datasets import create_job_for_dataset, delete_dataset_blob, import_dataset
 from machine_admin.db import get_db, get_session_factory, get_settings
-from machine_admin.exports import build_job_export as build_job_export_file
+from machine_admin.exports import (
+    build_job_export as build_job_export_file,
+    job_export_filename,
+)
 from machine_admin.models import (
     AdminUser,
     ApiToken,
@@ -1901,6 +1904,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not job:
             raise HTTPException(status_code=404, detail="Job não encontrado.")
         payload, row_count = build_job_export(session, job_id)
+        municipality = session.get(Municipality, job.municipality_slug)
+        filename = job_export_filename(
+            municipality.name if municipality else job.municipality_slug,
+            exported_at=datetime.now(UTC),
+            timezone_name=(
+                municipality.timezone if municipality else "America/Fortaleza"
+            ),
+        )
         audit(
             session,
             actor_id=user.id,
@@ -1917,7 +1928,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             ),
             headers={
-                "Content-Disposition": f'attachment; filename="job_{job_id}.xlsx"',
+                "Content-Disposition": f'attachment; filename="{filename}"',
                 "Cache-Control": "no-store",
             },
         )

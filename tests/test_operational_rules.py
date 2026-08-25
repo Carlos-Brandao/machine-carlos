@@ -406,6 +406,10 @@ class NotificationOutboxTests(unittest.TestCase):
         self.assertEqual("998877", created.recipient)
         self.assertEqual("pending", created.status)
         self.assertIn(":2:", created.deduplication_key)
+        self.assertEqual(
+            "2026-08-18_09-00-00_Boa_Vista_MargemConsultada.xlsx",
+            created.payload_json["filename"],
+        )
         self.assertEqual([created], session.added)
 
         session.scalar_result = created
@@ -456,8 +460,10 @@ class NotificationOutboxTests(unittest.TestCase):
 
             def __init__(self) -> None:
                 self.delivered = False
+                self.filename = ""
 
             def document(self, path: Path, caption: str) -> bool:
+                self.filename = path.name
                 self.delivered = path.read_bytes() == b"xlsx" and "Resultado" in caption
                 return self.delivered
 
@@ -470,7 +476,7 @@ class NotificationOutboxTests(unittest.TestCase):
             status="processing",
             payload_json={
                 "type": "job_result",
-                "filename": "resultado.xlsx",
+                "filename": "../../resultado.xlsx",
                 "caption": "Resultado final",
             },
             attempts=1,
@@ -490,6 +496,7 @@ class NotificationOutboxTests(unittest.TestCase):
 
         for_chat.assert_called_once_with(123456)
         self.assertTrue(notifier.delivered)
+        self.assertEqual("resultado.xlsx", notifier.filename)
         self.assertEqual("sent", notification.status)
         self.assertIsNotNone(notification.sent_at)
         self.assertIsNone(notification.locked_by)

@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 
 from machine_admin.config import Settings
 from machine_admin.db import get_session_factory
-from machine_admin.exports import build_job_export
-from machine_admin.models import Job, JobEvent, NotificationOutbox
+from machine_admin.exports import build_job_export, job_export_filename
+from machine_admin.models import Job, JobEvent, Municipality, NotificationOutbox
 from services.telegram import TelegramNotifier
 
 
@@ -35,6 +35,11 @@ def enqueue_job_result(session: Session, job: Job) -> NotificationOutbox | None:
     )
     if existing:
         return existing
+    municipality = (
+        session.get(Municipality, job.municipality_slug)
+        if hasattr(session, "get")
+        else None
+    )
     message = NotificationOutbox(
         deduplication_key=key,
         job_id=job.id,
@@ -44,7 +49,15 @@ def enqueue_job_result(session: Session, job: Job) -> NotificationOutbox | None:
         payload_json={
             "type": "job_result",
             "caption": f"Resultado final — {job.municipality_slug} (job #{job.id})",
-            "filename": f"job_{job.id}.xlsx",
+            "filename": job_export_filename(
+                municipality.name if municipality else job.municipality_slug,
+                exported_at=job.finished_at or datetime.now(UTC),
+                timezone_name=(
+                    municipality.timezone
+                    if municipality
+                    else "America/Fortaleza"
+                ),
+            ),
         },
         max_attempts=5,
     )
@@ -188,26 +201,24 @@ def deliver_notification(
 
             filename = str(
                 notification.payload_json.get("filename")
-                or f"job_{notification.job_id}.xlsx"
+                or job_export_filename(
+                    f"job-{notification.job_id}", exported_at=datetime.now(UTC)
+                )
             )
+            filename = Path(filename).name
+            if not filename.lower().endswith(".xlsx"):
+                filename += ".xlsx"
             caption = str(
                 notification.payload_json.get("caption") or "Resultado final"
             )
             caption = f"{caption} · envio #{notification.id}"
-            temporary_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    prefix="machine_notification_",
-                    suffix=Path(filename).suffix or ".xlsx",
-                    delete=False,
-                ) as temporary:
-                    temporary.write(workbook)
-                    temporary_path = Path(temporary.name)
+            with tempfile.TemporaryDirectory(
+                prefix="machine_notification_"
+            ) as directory:
+                temporary_path = Path(directory) / filename
+                temporary_path.write_bytes(workbook)
                 if not notifier.document(temporary_path, caption):
                     raise RuntimeError("Telegram recusou ou não concluiu o envio.")
-            finally:
-                if temporary_path:
-                    temporary_path.unlink(missing_ok=True)
             if lost_lease.is_set():
                 raise RuntimeError("Lease da notificação foi perdido durante o envio.")
 

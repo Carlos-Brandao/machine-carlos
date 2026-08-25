@@ -96,7 +96,7 @@ class CorruptedUploadRegressionTests(unittest.TestCase):
 
 
 class ExportCollisionRegressionTests(unittest.TestCase):
-    def test_generated_columns_never_replace_even_reserved_source_names(self) -> None:
+    def test_generated_columns_preserve_sources_and_skip_equivalent_values(self) -> None:
         merged = merge_export_columns(
             {
                 "CPF": "529.982.247-25",
@@ -113,7 +113,7 @@ class ExportCollisionRegressionTests(unittest.TestCase):
         self.assertEqual("valor original da base", merged["RETORNO_CPF"])
         self.assertEqual("status informado pelo cliente", merged["Status_Item"])
         self.assertEqual("coluna também importada", merged["SAIDA_RETORNO_CPF"])
-        self.assertEqual("52998224725", merged["SAIDA_RETORNO_CPF_2"])
+        self.assertNotIn("SAIDA_RETORNO_CPF_2", merged)
         self.assertEqual("completed", merged["SAIDA_Status_Item"])
 
     def test_superseded_result_is_preserved_but_not_mixed_into_new_export(self) -> None:
