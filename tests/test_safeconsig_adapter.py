@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from services.captcha import CaptchaError
+from services.captcha import CaptchaError, resolve_turnstile
 from services.execution import OutcomeKind
 from services.registry import MUNICIPALITIES
 from workers.adapters.safeconsig import (
@@ -18,6 +18,7 @@ from workers.adapters.safeconsig import (
     _explicit_not_found,
     _found_outcome,
     _labeled_value,
+    _turnstile_present,
 )
 from workers.engine import AdapterError, WorkItem
 from workers.registry import ADAPTERS, create_adapter
@@ -165,6 +166,62 @@ class SafeConsigAdapterTests(unittest.TestCase):
         self.assertEqual(
             "safeconsig_turnstile_unavailable", unavailable.error_code
         )
+
+    def test_hidden_turnstile_is_still_present_after_failed_post(self) -> None:
+        class Locator:
+            def __init__(self, count: int):
+                self._count = count
+
+            def count(self) -> int:
+                return self._count
+
+        class Page:
+            def locator(self, selector: str) -> Locator:
+                return Locator(1 if selector == '.cf-turnstile[data-sitekey]' else 0)
+
+        self.assertTrue(_turnstile_present(Page()))
+
+    def test_turnstile_solver_accepts_attached_hidden_widget(self) -> None:
+        class Widget:
+            first = None
+
+            def __init__(self):
+                self.first = self
+                self.wait_state = None
+
+            def wait_for(self, *, state: str, timeout: int) -> None:
+                self.wait_state = (state, timeout)
+
+            def get_attribute(self, name: str) -> str | None:
+                return "site-key" if name == "data-sitekey" else None
+
+        class Page:
+            url = "https://fortaleza.safeconsig.com.br/safe/login"
+
+            def __init__(self):
+                self.widget = Widget()
+
+            def locator(self, _selector: str) -> Widget:
+                return self.widget
+
+        submitted = Mock()
+        submitted.raise_for_status.return_value = None
+        submitted.json.return_value = {"status": 1, "request": "captcha-id"}
+        solved = Mock()
+        solved.raise_for_status.return_value = None
+        solved.json.return_value = {"status": 1, "request": "token"}
+        page = Page()
+
+        with (
+            patch("services.captcha.get_runtime_secret", return_value="api-key"),
+            patch("services.captcha.requests.post", return_value=submitted),
+            patch("services.captcha.requests.get", return_value=solved),
+            patch("services.captcha.time.sleep"),
+        ):
+            token = resolve_turnstile(page)
+
+        self.assertEqual("token", token)
+        self.assertEqual(("attached", 10_000), page.widget.wait_state)
 
     def test_query_redirect_to_login_is_retryable_session_expiry(self) -> None:
         class LoginRedirectPage:

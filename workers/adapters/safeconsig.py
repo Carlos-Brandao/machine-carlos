@@ -86,6 +86,23 @@ def _turnstile_visible(page: Page) -> bool:
     return any(_visible(page, selector) for selector in selectors)
 
 
+def _turnstile_present(page: Page) -> bool:
+    """Detecta o widget mesmo depois de o JSF ocultá-lo após um POST falho."""
+    selectors = (
+        ".cf-turnstile[data-sitekey]",
+        'input[name="cf-turnstile-response"]',
+        'iframe[src*="challenges.cloudflare.com"]',
+        'iframe[src*="turnstile"]',
+    )
+    for selector in selectors:
+        try:
+            if page.locator(selector).count() > 0:
+                return True
+        except PlaywrightError:
+            continue
+    return False
+
+
 def _explicit_invalid_credentials(text: str) -> bool:
     normalized = text.casefold()
     markers = (
@@ -271,7 +288,7 @@ class SafeConsigSession(PortalSession):
             # Em headless, o botão pode ficar bloqueado até o Turnstile ser
             # resolvido. Nesse caso não espere o timeout global nem repita o
             # captcha: faça uma única tentativa assistida.
-            if _visible(self.page, LOGIN_FIELD) and _turnstile_visible(self.page):
+            if _visible(self.page, LOGIN_FIELD) and _turnstile_present(self.page):
                 self._solve_turnstile_and_submit()
                 captcha_attempted = True
             else:
@@ -286,7 +303,7 @@ class SafeConsigSession(PortalSession):
         if (
             not captcha_attempted
             and _visible(self.page, LOGIN_FIELD)
-            and _turnstile_visible(self.page)
+            and _turnstile_present(self.page)
         ):
             self._solve_turnstile_and_submit()
             body = _body_text(self.page)

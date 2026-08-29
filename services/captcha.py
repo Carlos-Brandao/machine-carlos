@@ -30,7 +30,9 @@ def resolve_turnstile(page, selector: str = ".cf-turnstile") -> str:
     if not api_key:
         raise CaptchaError("TWOCAPTCHA_API_KEY não configurada.")
     widget = page.locator(selector).first
-    widget.wait_for(state="visible", timeout=10_000)
+    # O JSF redesenha e pode ocultar o contêiner depois de um POST sem token,
+    # mas o sitekey permanece disponível no elemento anexado ao formulário.
+    widget.wait_for(state="attached", timeout=10_000)
     sitekey = str(widget.get_attribute("data-sitekey") or "").strip()
     if not sitekey:
         raise CaptchaError("O Turnstile não informou o sitekey.")
