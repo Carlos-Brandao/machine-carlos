@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import deploy
@@ -9,6 +10,21 @@ from services.remote import RemoteSettings
 
 
 class DeploymentHardeningTests(unittest.TestCase):
+    def test_safeconsig_worker_is_managed_by_deploy_and_scheduler(self) -> None:
+        unit = "machine-safeconsig-worker.service"
+
+        self.assertIn(unit, deploy.SERVICE_UNITS)
+        self.assertIn(unit, deploy.STOP_UNITS)
+        self.assertIn("safeconsig", deploy.SOURCE_DIRS)
+
+        service = (Path(deploy.__file__).parent / "deploy" / unit).read_text()
+        scheduler = (
+            Path(deploy.__file__).parent / "deploy" / "machine-scheduler.service"
+        ).read_text()
+        self.assertIn("ExecStart=/opt/machine/current/.venv/bin/python -u run_worker.py safeconsig", service)
+        self.assertIn(f"Wants=machine-rf1-worker.service machine-facil-worker.service {unit}", scheduler)
+        self.assertIn(f"After=machine-rf1-worker.service machine-facil-worker.service {unit}", scheduler)
+
     def test_service_environments_do_not_leak_database_or_master_key(self) -> None:
         source = {
             "DATABASE_URL": "postgresql://secret",
@@ -52,6 +68,16 @@ class DeploymentHardeningTests(unittest.TestCase):
         self.assertLess(script.index("upgrade"), script.index("ensure_service_tokens.py"))
         self.assertLess(script.index("ensure_service_tokens.py"), script.index("mv -Tf"))
         self.assertIn("verify_units_stable 30", script)
+
+    def test_rollback_tolerates_units_absent_from_previous_release(self) -> None:
+        strict = deploy._service_install_script()
+        recovery = deploy._service_install_script(strict=False)
+
+        self.assertIn('echo "Unidade ausente: $unit"', strict)
+        self.assertIn('exit 1', strict)
+        self.assertIn('systemctl stop "$unit"', recovery)
+        self.assertIn('rm -f -- "/etc/systemd/system/$unit"', recovery)
+        self.assertIn('continue', recovery)
 
 
 if __name__ == "__main__":

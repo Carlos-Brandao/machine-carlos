@@ -61,6 +61,7 @@ SERVICE_UNITS = (
     "machine-backend.service",
     "machine-rf1-worker.service",
     "machine-facil-worker.service",
+    "machine-safeconsig-worker.service",
     "machine-consiglog-worker.service",
     "machine-notifications.service",
     "machine-telegram.service",
@@ -70,6 +71,7 @@ STOP_UNITS = (
     "machine-scheduler.service",
     "machine-rf1-worker.service",
     "machine-facil-worker.service",
+    "machine-safeconsig-worker.service",
     "machine-consiglog-worker.service",
     "machine-notifications.service",
     "machine-telegram.service",
@@ -393,12 +395,18 @@ def _current_target(ssh, settings: RemoteSettings) -> str | None:
     return output.strip() or None
 
 
-def _service_install_script() -> str:
+def _service_install_script(*, strict: bool = True) -> str:
     units = " ".join(shlex.quote(item) for item in SERVICE_UNITS)
+    missing_unit = (
+        'echo "Unidade ausente: $unit" >&2; exit 1'
+        if strict
+        else 'systemctl stop "$unit" 2>/dev/null || true; '
+        'rm -f -- "/etc/systemd/system/$unit"; continue'
+    )
     return f"""
 for unit in {units}; do
   source_unit="$release/deploy/$unit"
-  [[ -f "$source_unit" ]] || {{ echo "Unidade ausente: $unit" >&2; exit 1; }}
+  [[ -f "$source_unit" ]] || {{ {missing_unit}; }}
   sed -e "s|/opt/machine|$root|g" \\
       -e "s|^User=machine$|User=$service_user|" \\
       -e "s|^Group=machine$|Group=$service_group|" \\
@@ -639,7 +647,7 @@ def _restore_previous(
     group = shlex.quote(settings.service_group)
     units = " ".join(shlex.quote(item) for item in SERVICE_UNITS)
     previous = shlex.quote(previous_target) if previous_target else ""
-    install_units = _service_install_script()
+    install_units = _service_install_script(strict=False)
     service_envs = _service_env_script()
     validate_services = _service_validation_script()
     script = f"""
@@ -661,6 +669,7 @@ if [[ "$previous" == "$legacy" && -f "$root/legacy-systemd/.captured" ]]; then
     if grep -Fxq "$unit" "$root/legacy-systemd/present.list"; then
       cp -a "$root/legacy-systemd/$unit" "/etc/systemd/system/$unit"
     else
+      systemctl stop "$unit" 2>/dev/null || true
       rm -f -- "/etc/systemd/system/$unit"
     fi
   done
@@ -695,7 +704,7 @@ def _rollback(ssh, settings: RemoteSettings, requested_release: str | None) -> s
     user = shlex.quote(settings.service_user)
     group = shlex.quote(settings.service_group)
     units = " ".join(shlex.quote(item) for item in SERVICE_UNITS)
-    install_units = _service_install_script()
+    install_units = _service_install_script(strict=False)
     service_envs = _service_env_script()
     validate_services = _service_validation_script()
     script = f"""
@@ -727,9 +736,19 @@ rm -f -- "$next_link"
 ln -s "$target" "$next_link"
 mv -Tf "$next_link" "$root/current"
 systemctl daemon-reload
-systemctl restart {units}
+rollback_units=()
+for unit in {units}; do
+  if systemctl cat "$unit" >/dev/null 2>&1; then
+    rollback_units+=("$unit")
+  fi
+done
+((${{#rollback_units[@]}} > 0)) || {{
+  echo "Nenhuma unidade restaurável encontrada" >&2
+  exit 1
+}}
+systemctl restart "${{rollback_units[@]}}"
 wait_for_backend
-verify_units_stable 30 {units}
+verify_units_stable 30 "${{rollback_units[@]}}"
 echo "Rollback ativo: $(basename "$target")"
 """
     return _run_root_script(ssh, settings, script)

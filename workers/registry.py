@@ -10,6 +10,7 @@ from services.registry import MUNICIPALITIES, PLATFORMS
 from workers.adapters.consiglog import ConsiglogAdapter
 from workers.adapters.facil import FacilAdapter
 from workers.adapters.rf1 import RF1Adapter
+from workers.adapters.safeconsig import SafeConsigAdapter
 from workers.engine import PortalAdapter
 
 
@@ -25,12 +26,7 @@ ADAPTERS: dict[str, AdapterRegistration] = {
     "rf1": AdapterRegistration("rf1", RF1Adapter, True),
     "facil": AdapterRegistration("facil", FacilAdapter, True),
     "consiglog": AdapterRegistration("consiglog", ConsiglogAdapter, True),
-    "safeconsig": AdapterRegistration(
-        "safeconsig",
-        None,
-        False,
-        "SAFE possui apenas runner legado; adapter transacional não implementado.",
-    ),
+    "safeconsig": AdapterRegistration("safeconsig", SafeConsigAdapter, True),
     "grid": AdapterRegistration(
         "grid",
         None,

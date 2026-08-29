@@ -2,8 +2,8 @@
 Description=Machine worker pools
 After=network-online.target machine-backend.service
 Requires=machine-backend.service
-Wants=machine-rf1-worker.service machine-facil-worker.service machine-consiglog-worker.service
-After=machine-rf1-worker.service machine-facil-worker.service machine-consiglog-worker.service
+Wants=machine-rf1-worker.service machine-facil-worker.service machine-safeconsig-worker.service machine-consiglog-worker.service
+After=machine-rf1-worker.service machine-facil-worker.service machine-safeconsig-worker.service machine-consiglog-worker.service
 
 [Service]
 Type=oneshot

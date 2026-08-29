@@ -91,7 +91,19 @@ MUNICIPALITIES: dict[str, MunicipalityDefinition] = {
     ),
     "pref2": MunicipalityDefinition("pref2", "Prefeitura 2", "rf1", enabled=False),
     "fortaleza": MunicipalityDefinition(
-        "fortaleza", "Fortaleza", "safeconsig", adapter_version="safeconsig.legacy"
+        "fortaleza",
+        "Fortaleza",
+        "safeconsig",
+        login_url="https://fortaleza.safeconsig.com.br/safe/login",
+        query_url="https://fortaleza.safeconsig.com.br/safe/pages/consulta/margem/",
+        operational_status="testing",
+        input_schema={
+            "version": 1,
+            "required": ["cpf", "registration"],
+            "optional": [],
+            "deduplication_key": ["cpf", "registration"],
+        },
+        adapter_version="safeconsig.v1",
     ),
     "maranguape": MunicipalityDefinition(
         "maranguape", "Maranguape", "safeconsig", adapter_version="safeconsig.legacy"

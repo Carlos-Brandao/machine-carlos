@@ -19,6 +19,71 @@ class CaptchaError(RuntimeError):
     """Falha configurável ou transitória ao resolver um captcha."""
 
 
+def resolve_turnstile(page, selector: str = ".cf-turnstile") -> str:
+    """Resolve um Cloudflare Turnstile visível usando o cofre do sistema.
+
+    A chamada é síncrona porque os adapters transacionais usam Playwright sync.
+    O token é devolvido ao adapter, que conhece o formulário correto e faz a
+    submissão. Nenhum segredo ou token é escrito em log/arquivo.
+    """
+    api_key = get_runtime_secret("TWOCAPTCHA_API_KEY")
+    if not api_key:
+        raise CaptchaError("TWOCAPTCHA_API_KEY não configurada.")
+    widget = page.locator(selector).first
+    widget.wait_for(state="visible", timeout=10_000)
+    sitekey = str(widget.get_attribute("data-sitekey") or "").strip()
+    if not sitekey:
+        raise CaptchaError("O Turnstile não informou o sitekey.")
+    response = requests.post(
+        TWOCAPTCHA_SUBMIT_URL,
+        data={
+            "key": api_key,
+            "method": "turnstile",
+            "sitekey": sitekey,
+            "pageurl": page.url,
+            "json": 1,
+        },
+        timeout=TWOCAPTCHA_HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise CaptchaError("O 2Captcha retornou uma resposta inválida.") from exc
+    if data.get("status") != 1:
+        raise CaptchaError(
+            f"Falha ao enviar Turnstile: {data.get('request', 'erro desconhecido')}."
+        )
+    captcha_id = data["request"]
+    for _ in range(30):
+        time.sleep(5)
+        result = requests.get(
+            TWOCAPTCHA_RESULT_URL,
+            params={
+                "key": api_key,
+                "action": "get",
+                "id": captcha_id,
+                "json": 1,
+            },
+            timeout=TWOCAPTCHA_HTTP_TIMEOUT,
+        )
+        result.raise_for_status()
+        try:
+            data = result.json()
+        except ValueError as exc:
+            raise CaptchaError("O 2Captcha retornou uma resposta inválida.") from exc
+        if data.get("status") == 1:
+            token = str(data.get("request") or "").strip()
+            if not token:
+                raise CaptchaError("O 2Captcha retornou um token vazio.")
+            return token
+        if data.get("request") != "CAPCHA_NOT_READY":
+            raise CaptchaError(
+                f"Falha ao resolver Turnstile: {data.get('request', 'erro desconhecido')}."
+            )
+    raise CaptchaError("Tempo limite do Turnstile excedido após 150 segundos.")
+
+
 def _solve_2captcha(img_bytes: bytes, regsense: int = 0) -> str:
     api_key = get_runtime_secret("TWOCAPTCHA_API_KEY")
     if not api_key:

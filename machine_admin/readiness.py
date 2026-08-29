@@ -22,10 +22,11 @@ from machine_admin.models import (
 )
 
 
-TRANSACTIONAL_ADAPTERS = frozenset({"rf1", "facil", "consiglog"})
+TRANSACTIONAL_ADAPTERS = frozenset({"rf1", "facil", "consiglog", "safeconsig"})
 REQUIRED_SECRETS: dict[str, frozenset[str]] = {
     "rf1": frozenset({"TWOCAPTCHA_API_KEY"}),
     "facil": frozenset({"TWOCAPTCHA_API_KEY"}),
+    "safeconsig": frozenset({"TWOCAPTCHA_API_KEY"}),
     "consiglog": frozenset(),
 }
 

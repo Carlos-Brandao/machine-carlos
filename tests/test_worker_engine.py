@@ -155,10 +155,14 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertTrue(ADAPTERS["rf1"].available)
         self.assertTrue(ADAPTERS["facil"].available)
         self.assertTrue(ADAPTERS["consiglog"].available)
-        self.assertFalse(ADAPTERS["safeconsig"].available)
+        self.assertTrue(ADAPTERS["safeconsig"].available)
         self.assertFalse(ADAPTERS["grid"].available)
-        with patch.dict("os.environ", {"WORKER_PLATFORMS": "rf1,facil"}):
-            self.assertEqual(("rf1", "facil"), configured_platforms())
+        with patch.dict(
+            "os.environ", {"WORKER_PLATFORMS": "rf1,facil,safeconsig"}
+        ):
+            self.assertEqual(
+                ("rf1", "facil", "safeconsig"), configured_platforms()
+            )
         with patch.dict("os.environ", {"WORKER_PLATFORMS": "grid"}):
             with self.assertRaisesRegex(ValueError, "indisponíveis"):
                 configured_platforms()
@@ -176,7 +180,7 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertNotIn(RF1Worker, ConsiglogWorker.__mro__[1:])
 
     def test_unexpected_adapter_bugs_are_retryable_not_false_permanent_failures(self) -> None:
-        for platform in ("rf1", "facil", "consiglog"):
+        for platform in ("rf1", "facil", "consiglog", "safeconsig"):
             with self.subTest(platform=platform):
                 outcome = create_adapter(platform).classify_exception(
                     RuntimeError("unexpected"), stage="consultation"

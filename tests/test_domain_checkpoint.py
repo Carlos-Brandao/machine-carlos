@@ -318,7 +318,15 @@ class DomainCheckpointTests(unittest.TestCase):
         }
         self.assertEqual({"boa-vista", "gov-am", "paulista"}, ready)
         self.assertEqual("testing", MUNICIPALITIES["itabuna"].operational_status)
-        self.assertEqual("draft", MUNICIPALITIES["fortaleza"].operational_status)
+        self.assertEqual("testing", MUNICIPALITIES["fortaleza"].operational_status)
+        self.assertEqual(
+            ["cpf", "registration"],
+            MUNICIPALITIES["fortaleza"].input_schema["required"],
+        )
+        self.assertEqual(
+            ["cpf", "registration"],
+            MUNICIPALITIES["fortaleza"].input_schema["deduplication_key"],
+        )
         self.assertEqual(
             [0, 1, 2, 3, 4, 5, 6],
             MUNICIPALITIES["boa-vista"].schedule_policy["weekdays"],
@@ -327,6 +335,19 @@ class DomainCheckpointTests(unittest.TestCase):
             {"weekdays": [0, 1, 2, 3, 4], "start_hour": None, "end_hour": None},
             MUNICIPALITIES["gov-am"].schedule_policy,
         )
+
+    def test_fortaleza_catalog_transition_is_persisted_by_migration(self) -> None:
+        migration = (
+            Path(__file__).parents[1]
+            / "migrations"
+            / "versions"
+            / "20260829_0007_safeconsig_fortaleza.py"
+        ).read_text()
+
+        self.assertIn("down_revision = \"20260818_0006\"", migration)
+        self.assertIn("adapter_version = 'safeconsig.v1'", migration)
+        self.assertIn("jsonb_build_array('cpf', 'registration')", migration)
+        self.assertIn("operational_status = 'draft' THEN 'testing'", migration)
 
     def test_new_operational_tables_and_columns_are_declared(self) -> None:
         self.assertEqual(17, len(Base.metadata.tables))
