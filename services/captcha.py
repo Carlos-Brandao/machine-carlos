@@ -1,6 +1,7 @@
 import base64
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
@@ -19,7 +20,15 @@ class CaptchaError(RuntimeError):
     """Falha configurável ou transitória ao resolver um captcha."""
 
 
-def resolve_turnstile(page, selector: str = ".cf-turnstile") -> str:
+@dataclass(frozen=True, slots=True)
+class TurnstileSolution:
+    token: str
+    user_agent: str | None = None
+
+
+def resolve_turnstile(
+    page, selector: str = ".cf-turnstile"
+) -> TurnstileSolution:
     """Resolve um Cloudflare Turnstile visível usando o cofre do sistema.
 
     A chamada é síncrona porque os adapters transacionais usam Playwright sync.
@@ -36,6 +45,7 @@ def resolve_turnstile(page, selector: str = ".cf-turnstile") -> str:
     sitekey = str(widget.get_attribute("data-sitekey") or "").strip()
     if not sitekey:
         raise CaptchaError("O Turnstile não informou o sitekey.")
+    browser_user_agent = str(page.evaluate("navigator.userAgent") or "").strip()
     response = requests.post(
         TWOCAPTCHA_SUBMIT_URL,
         data={
@@ -43,6 +53,7 @@ def resolve_turnstile(page, selector: str = ".cf-turnstile") -> str:
             "method": "turnstile",
             "sitekey": sitekey,
             "pageurl": page.url,
+            "userAgent": browser_user_agent,
             "json": 1,
         },
         timeout=TWOCAPTCHA_HTTP_TIMEOUT,
@@ -78,7 +89,11 @@ def resolve_turnstile(page, selector: str = ".cf-turnstile") -> str:
             token = str(data.get("request") or "").strip()
             if not token:
                 raise CaptchaError("O 2Captcha retornou um token vazio.")
-            return token
+            returned_user_agent = str(data.get("useragent") or "").strip()
+            return TurnstileSolution(
+                token=token,
+                user_agent=returned_user_agent or browser_user_agent or None,
+            )
         if data.get("request") != "CAPCHA_NOT_READY":
             raise CaptchaError(
                 f"Falha ao resolver Turnstile: {data.get('request', 'erro desconhecido')}."

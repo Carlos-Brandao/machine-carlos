@@ -204,24 +204,39 @@ class SafeConsigAdapterTests(unittest.TestCase):
             def locator(self, _selector: str) -> Widget:
                 return self.widget
 
+            def evaluate(self, expression: str) -> str:
+                self.assert_expression = expression
+                return "Browser User Agent"
+
         submitted = Mock()
         submitted.raise_for_status.return_value = None
         submitted.json.return_value = {"status": 1, "request": "captcha-id"}
         solved = Mock()
         solved.raise_for_status.return_value = None
-        solved.json.return_value = {"status": 1, "request": "token"}
+        solved.json.return_value = {
+            "status": 1,
+            "request": "token",
+            "useragent": "Solver User Agent",
+        }
         page = Page()
 
         with (
             patch("services.captcha.get_runtime_secret", return_value="api-key"),
-            patch("services.captcha.requests.post", return_value=submitted),
+            patch(
+                "services.captcha.requests.post", return_value=submitted
+            ) as post_request,
             patch("services.captcha.requests.get", return_value=solved),
             patch("services.captcha.time.sleep"),
         ):
-            token = resolve_turnstile(page)
+            solution = resolve_turnstile(page)
 
-        self.assertEqual("token", token)
+        self.assertEqual("token", solution.token)
+        self.assertEqual("Solver User Agent", solution.user_agent)
         self.assertEqual(("attached", 10_000), page.widget.wait_state)
+        self.assertEqual(
+            "Browser User Agent",
+            post_request.call_args.kwargs["data"]["userAgent"],
+        )
 
     def test_query_redirect_to_login_is_retryable_session_expiry(self) -> None:
         class LoginRedirectPage:

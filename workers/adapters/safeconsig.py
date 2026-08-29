@@ -336,7 +336,21 @@ class SafeConsigSession(PortalSession):
 
     def _solve_turnstile_and_submit(self) -> None:
         assert self.page is not None
-        token = resolve_turnstile(self.page, '#idForm12344 .cf-turnstile')
+        solution = resolve_turnstile(self.page, '#idForm12344 .cf-turnstile')
+        if solution.user_agent:
+            # O token do Turnstile é vinculado ao User-Agent usado pelo solver.
+            # O POST AJAX e o valor visto pelo JavaScript precisam concordar.
+            self.context.set_extra_http_headers(
+                {"User-Agent": solution.user_agent}
+            )
+            self.page.evaluate(
+                """userAgent => Object.defineProperty(
+                    Navigator.prototype,
+                    'userAgent',
+                    {get: () => userAgent, configurable: true}
+                )""",
+                solution.user_agent,
+            )
         self.page.evaluate(
             """token => {
                 const form = document.getElementById('idForm12344');
@@ -355,7 +369,7 @@ class SafeConsigSession(PortalSession):
                     input.dispatchEvent(new Event('change', {bubbles: true}));
                 }
             }""",
-            token,
+            solution.token,
         )
         # O primeiro POST pode redesenhar o formulário; preenche novamente antes
         # da submissão com o token recém-resolvido.
