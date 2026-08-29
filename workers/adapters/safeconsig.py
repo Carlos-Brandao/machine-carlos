@@ -44,6 +44,7 @@ SEARCH_BUTTON = (
 )
 RESULT_TABLE = 'tbody[id="tabView:pesquisaMutuario:listaColaborador:input_data"]'
 DETAIL_PANEL = "div.grid-colaborador"
+BROWSER_VIEWPORT = {"width": 1280, "height": 900}
 
 
 class SafeConsigResponseUnconfirmed(RuntimeError):
@@ -101,6 +102,15 @@ def _turnstile_present(page: Page) -> bool:
         except PlaywrightError:
             continue
     return False
+
+
+def _turnstile_token_ready(page: Page) -> bool:
+    """Confirma se o próprio widget já produziu um token utilizável."""
+    try:
+        field = page.locator('input[name="cf-turnstile-response"]').first
+        return bool(field.count() and str(field.input_value() or "").strip())
+    except PlaywrightError:
+        return False
 
 
 def _explicit_invalid_credentials(text: str) -> bool:
@@ -240,7 +250,7 @@ class SafeConsigSession(PortalSession):
             self.browser = self._playwright.chromium.launch(
                 headless=os.getenv("HEADLESS", "true").lower() == "true"
             )
-            self.context = self.browser.new_context(viewport={"width": 1280, "height": 900})
+            self.context = self.browser.new_context(viewport=BROWSER_VIEWPORT)
             self.page = self.context.new_page()
             self._login()
         except Exception:
@@ -282,17 +292,29 @@ class SafeConsigSession(PortalSession):
         # permanecer no login depois da tentativa.
         self.page.wait_for_timeout(2_500)
         captcha_attempted = False
-        try:
-            self._submit_login(timeout=7_000)
-        except PlaywrightTimeoutError:
-            # Em headless, o botão pode ficar bloqueado até o Turnstile ser
-            # resolvido. Nesse caso não espere o timeout global nem repita o
-            # captcha: faça uma única tentativa assistida.
-            if _visible(self.page, LOGIN_FIELD) and _turnstile_present(self.page):
-                self._solve_turnstile_and_submit()
-                captcha_attempted = True
-            else:
-                raise
+        if (
+            _turnstile_present(self.page)
+            and not _turnstile_token_ready(self.page)
+        ):
+            # Não envie um POST sabidamente sem token. Além de ser inútil, ele
+            # pode vincular o ViewState/cookie da sessão a uma tentativa negada.
+            self._solve_turnstile_and_submit()
+            captcha_attempted = True
+        else:
+            try:
+                self._submit_login(timeout=7_000)
+            except PlaywrightTimeoutError:
+                # Em headless, o botão pode ficar bloqueado até o Turnstile ser
+                # resolvido. Nesse caso não espere o timeout global nem repita o
+                # captcha: faça uma única tentativa assistida.
+                if (
+                    _visible(self.page, LOGIN_FIELD)
+                    and _turnstile_present(self.page)
+                ):
+                    self._solve_turnstile_and_submit()
+                    captcha_attempted = True
+                else:
+                    raise
         body = _body_text(self.page)
         if _explicit_invalid_credentials(body):
             raise AdapterError(
@@ -339,18 +361,31 @@ class SafeConsigSession(PortalSession):
         solution = resolve_turnstile(self.page, '#idForm12344 .cf-turnstile')
         if solution.user_agent:
             # O token do Turnstile é vinculado ao User-Agent usado pelo solver.
-            # O POST AJAX e o valor visto pelo JavaScript precisam concordar.
-            self.context.set_extra_http_headers(
-                {"User-Agent": solution.user_agent}
+            # Recriar o contexto faz com que GET, cookies, JavaScript e POST
+            # usem esse mesmo agente desde o início. Alterá-lo só no POST deixa
+            # uma sessão incoerente e o SAFE rejeita mesmo um token válido.
+            previous_context = self.context
+            replacement = self.browser.new_context(
+                viewport=BROWSER_VIEWPORT,
+                user_agent=solution.user_agent,
             )
-            self.page.evaluate(
-                """userAgent => Object.defineProperty(
-                    Navigator.prototype,
-                    'userAgent',
-                    {get: () => userAgent, configurable: true}
-                )""",
-                solution.user_agent,
+            replacement_page = replacement.new_page()
+            response = replacement_page.goto(
+                self.login_url, wait_until="domcontentloaded", timeout=30_000
             )
+            self._check_http_response(response, stage="login")
+            replacement_page.locator(LOGIN_FIELD).wait_for(
+                state="visible", timeout=15_000
+            )
+            replacement_page.locator(PASSWORD_FIELD).wait_for(
+                state="visible", timeout=15_000
+            )
+            self.context = replacement
+            self.page = replacement_page
+            try:
+                previous_context.close()
+            except PlaywrightError:
+                pass
         self.page.evaluate(
             """token => {
                 const form = document.getElementById('idForm12344');

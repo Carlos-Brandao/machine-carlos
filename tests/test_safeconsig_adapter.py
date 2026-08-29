@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from services.captcha import CaptchaError, resolve_turnstile
+from services.captcha import CaptchaError, TurnstileSolution, resolve_turnstile
 from services.execution import OutcomeKind
 from services.registry import MUNICIPALITIES
 from workers.adapters.safeconsig import (
@@ -19,6 +19,7 @@ from workers.adapters.safeconsig import (
     _found_outcome,
     _labeled_value,
     _turnstile_present,
+    _turnstile_token_ready,
 )
 from workers.engine import AdapterError, WorkItem
 from workers.registry import ADAPTERS, create_adapter
@@ -181,6 +182,19 @@ class SafeConsigAdapterTests(unittest.TestCase):
 
         self.assertTrue(_turnstile_present(Page()))
 
+    def test_managed_turnstile_token_is_detected_before_login_post(self) -> None:
+        field = Mock()
+        field.first = field
+        field.count.return_value = 1
+        field.input_value.return_value = "managed-token"
+        page = Mock()
+        page.locator.return_value = field
+
+        self.assertTrue(_turnstile_token_ready(page))
+
+        field.input_value.return_value = ""
+        self.assertFalse(_turnstile_token_ready(page))
+
     def test_turnstile_solver_accepts_attached_hidden_widget(self) -> None:
         class Widget:
             first = None
@@ -237,6 +251,41 @@ class SafeConsigAdapterTests(unittest.TestCase):
             "Browser User Agent",
             post_request.call_args.kwargs["data"]["userAgent"],
         )
+
+    def test_solver_user_agent_recreates_context_before_submit(self) -> None:
+        session = SafeConsigSession.__new__(SafeConsigSession)
+        session.login_url = "https://fortaleza.safeconsig.com.br/safe/login"
+        session.credential = Mock(username="usuario", password="senha")
+        old_context = Mock()
+        old_page = Mock()
+        replacement_context = Mock()
+        replacement_page = Mock()
+        replacement_context.new_page.return_value = replacement_page
+        session.context = old_context
+        session.page = old_page
+        session.browser = Mock()
+        session.browser.new_context.return_value = replacement_context
+
+        with (
+            patch(
+                "workers.adapters.safeconsig.resolve_turnstile",
+                return_value=TurnstileSolution(
+                    token="token", user_agent="Solver User Agent"
+                ),
+            ),
+            patch.object(session, "_check_http_response"),
+            patch.object(session, "_submit_login") as submit,
+        ):
+            session._solve_turnstile_and_submit()
+
+        session.browser.new_context.assert_called_once_with(
+            viewport={"width": 1280, "height": 900},
+            user_agent="Solver User Agent",
+        )
+        old_context.close.assert_called_once_with()
+        self.assertIs(replacement_context, session.context)
+        self.assertIs(replacement_page, session.page)
+        submit.assert_called_once_with(timeout=20_000)
 
     def test_query_redirect_to_login_is_retryable_session_expiry(self) -> None:
         class LoginRedirectPage:
