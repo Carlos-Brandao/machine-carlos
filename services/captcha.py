@@ -8,6 +8,7 @@ import requests
 from dotenv import load_dotenv
 
 from machine_admin.secret_store import get_runtime_secret
+from services.proxy import HttpProxy
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -27,7 +28,10 @@ class TurnstileSolution:
 
 
 def resolve_turnstile(
-    page, selector: str = ".cf-turnstile"
+    page,
+    selector: str = ".cf-turnstile",
+    *,
+    proxy: HttpProxy | None = None,
 ) -> TurnstileSolution:
     """Resolve um Cloudflare Turnstile visível usando o cofre do sistema.
 
@@ -46,16 +50,26 @@ def resolve_turnstile(
     if not sitekey:
         raise CaptchaError("O Turnstile não informou o sitekey.")
     browser_user_agent = str(page.evaluate("navigator.userAgent") or "").strip()
+    submit_data = {
+        "key": api_key,
+        "method": "turnstile",
+        "sitekey": sitekey,
+        "pageurl": page.url,
+        "userAgent": browser_user_agent,
+        "json": 1,
+    }
+    if proxy is not None:
+        # O SAFE valida o IP do token. O solver e o Chromium precisam sair
+        # pelo mesmo proxy durante todo o fluxo.
+        submit_data.update(
+            {
+                "proxytype": "HTTP",
+                "proxy": proxy.twocaptcha_value(),
+            }
+        )
     response = requests.post(
         TWOCAPTCHA_SUBMIT_URL,
-        data={
-            "key": api_key,
-            "method": "turnstile",
-            "sitekey": sitekey,
-            "pageurl": page.url,
-            "userAgent": browser_user_agent,
-            "json": 1,
-        },
+        data=submit_data,
         timeout=TWOCAPTCHA_HTTP_TIMEOUT,
     )
     response.raise_for_status()

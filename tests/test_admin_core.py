@@ -242,6 +242,16 @@ class AdminCoreTests(unittest.TestCase):
         )
         self.assertIn("no-store", response.headers["cache-control"])
 
+        with patch("machine_admin.web.get_runtime_secret", return_value="proxy"):
+            response = endpoint(
+                "SAFECONSIG_HTTP_PROXY",
+                ApiPrincipal("worker", frozenset({"workers:execute"})),
+            )
+        self.assertEqual(
+            {"key": "SAFECONSIG_HTTP_PROXY", "value": "proxy"},
+            json.loads(response.body),
+        )
+
         with self.assertRaises(Exception) as caught:
             endpoint(
                 "APP_MASTER_KEY",

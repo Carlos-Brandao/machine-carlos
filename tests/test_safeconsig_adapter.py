@@ -9,6 +9,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from services.captcha import CaptchaError, TurnstileSolution, resolve_turnstile
 from services.execution import OutcomeKind
+from services.proxy import HttpProxy
 from services.registry import MUNICIPALITIES
 from workers.adapters.safeconsig import (
     LOGIN_FIELD,
@@ -242,7 +243,15 @@ class SafeConsigAdapterTests(unittest.TestCase):
             patch("services.captcha.requests.get", return_value=solved),
             patch("services.captcha.time.sleep"),
         ):
-            solution = resolve_turnstile(page)
+            solution = resolve_turnstile(
+                page,
+                proxy=HttpProxy(
+                    "proxy.example",
+                    10000,
+                    username="worker",
+                    password="secret",
+                ),
+            )
 
         self.assertEqual("token", solution.token)
         self.assertEqual("Solver User Agent", solution.user_agent)
@@ -250,6 +259,13 @@ class SafeConsigAdapterTests(unittest.TestCase):
         self.assertEqual(
             "Browser User Agent",
             post_request.call_args.kwargs["data"]["userAgent"],
+        )
+        self.assertEqual(
+            "worker:secret@proxy.example:10000",
+            post_request.call_args.kwargs["data"]["proxy"],
+        )
+        self.assertEqual(
+            "HTTP", post_request.call_args.kwargs["data"]["proxytype"]
         )
 
     def test_solver_user_agent_recreates_context_before_submit(self) -> None:
@@ -264,6 +280,9 @@ class SafeConsigAdapterTests(unittest.TestCase):
         session.context = old_context
         session.page = old_page
         session.browser = Mock()
+        session.proxy = HttpProxy(
+            "proxy.example", 10000, username="worker", password="secret"
+        )
         session.browser.new_context.return_value = replacement_context
 
         with (
@@ -272,7 +291,7 @@ class SafeConsigAdapterTests(unittest.TestCase):
                 return_value=TurnstileSolution(
                     token="token", user_agent="Solver User Agent"
                 ),
-            ),
+            ) as resolve_turnstile_mock,
             patch.object(session, "_check_http_response"),
             patch.object(session, "_submit_login") as submit,
         ):
@@ -285,6 +304,10 @@ class SafeConsigAdapterTests(unittest.TestCase):
         old_context.close.assert_called_once_with()
         self.assertIs(replacement_context, session.context)
         self.assertIs(replacement_page, session.page)
+        self.assertIs(
+            session.proxy,
+            resolve_turnstile_mock.call_args.kwargs["proxy"],
+        )
         submit.assert_called_once_with(timeout=20_000)
 
     def test_query_redirect_to_login_is_retryable_session_expiry(self) -> None:

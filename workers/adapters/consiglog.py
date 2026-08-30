@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-from urllib.parse import urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -24,6 +23,7 @@ from consiglog.consiglog import (
 )
 from machine_admin.secret_store import get_runtime_secret
 from services.execution import ExecutionOutcome, OutcomeKind
+from services.proxy import parse_http_proxy
 from workers.engine import AdapterError, CredentialPayload, WorkItem
 
 
@@ -40,23 +40,8 @@ def _proxy_settings() -> dict[str, str] | None:
     if not raw:
         return None
     try:
-        if "://" not in raw:
-            host, port, username, password = raw.split(":", 3)
-            return {
-                "server": f"http://{host}:{port}",
-                "username": username,
-                "password": password,
-            }
-        parsed = urlsplit(raw)
-        if not parsed.hostname or not parsed.port:
-            raise ValueError
-        settings = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
-        if parsed.username:
-            settings["username"] = parsed.username
-        if parsed.password:
-            settings["password"] = parsed.password
-        return settings
-    except (TypeError, ValueError) as exc:
+        return parse_http_proxy(raw).playwright_settings()
+    except ValueError as exc:
         raise AdapterError(
             OutcomeKind.INTEGRATION_UNAVAILABLE,
             "Proxy ConsigX inválida.",

@@ -15,8 +15,10 @@ from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+from machine_admin.secret_store import get_runtime_secret
 from services.captcha import CaptchaError, resolve_turnstile
 from services.execution import ExecutionOutcome, OutcomeKind
+from services.proxy import HttpProxy, parse_http_proxy
 from workers.engine import AdapterError, CredentialPayload, PortalSession, WorkItem
 
 
@@ -45,6 +47,18 @@ SEARCH_BUTTON = (
 RESULT_TABLE = 'tbody[id="tabView:pesquisaMutuario:listaColaborador:input_data"]'
 DETAIL_PANEL = "div.grid-colaborador"
 BROWSER_VIEWPORT = {"width": 1280, "height": 900}
+
+
+def _proxy_settings() -> HttpProxy:
+    try:
+        return parse_http_proxy(get_runtime_secret("SAFECONSIG_HTTP_PROXY"))
+    except (RuntimeError, ValueError) as exc:
+        raise AdapterError(
+            OutcomeKind.INTEGRATION_UNAVAILABLE,
+            "Proxy SafeConsig ausente ou inválida.",
+            code="safeconsig_proxy_invalid",
+            retry_after_seconds=900,
+        ) from exc
 
 
 class SafeConsigResponseUnconfirmed(RuntimeError):
@@ -246,9 +260,11 @@ class SafeConsigSession(PortalSession):
         self.query_url = credential.query_url or DEFAULT_QUERY_URL
         self._playwright = self.browser = self.context = self.page = None
         try:
+            self.proxy = _proxy_settings()
             self._playwright = sync_playwright().start()
             self.browser = self._playwright.chromium.launch(
-                headless=os.getenv("HEADLESS", "true").lower() == "true"
+                headless=os.getenv("HEADLESS", "true").lower() == "true",
+                proxy=self.proxy.playwright_settings(),
             )
             self.context = self.browser.new_context(viewport=BROWSER_VIEWPORT)
             self.page = self.context.new_page()
@@ -358,7 +374,11 @@ class SafeConsigSession(PortalSession):
 
     def _solve_turnstile_and_submit(self) -> None:
         assert self.page is not None
-        solution = resolve_turnstile(self.page, '#idForm12344 .cf-turnstile')
+        solution = resolve_turnstile(
+            self.page,
+            '#idForm12344 .cf-turnstile',
+            proxy=self.proxy,
+        )
         if solution.user_agent:
             # O token do Turnstile é vinculado ao User-Agent usado pelo solver.
             # Recriar o contexto faz com que GET, cookies, JavaScript e POST
