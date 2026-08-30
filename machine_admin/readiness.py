@@ -27,7 +27,7 @@ REQUIRED_SECRETS: dict[str, frozenset[str]] = {
     "rf1": frozenset({"TWOCAPTCHA_API_KEY"}),
     "facil": frozenset({"TWOCAPTCHA_API_KEY"}),
     "safeconsig": frozenset(
-        {"TWOCAPTCHA_API_KEY", "SAFECONSIG_HTTP_PROXY"}
+        {"TWOCAPTCHA_API_KEY", "SAFECONSIG_PROXY"}
     ),
     "consiglog": frozenset(),
 }

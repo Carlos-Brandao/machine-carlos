@@ -1,4 +1,4 @@
-"""Parsing seguro e compartilhado de proxies HTTP operacionais."""
+"""Parsing seguro e compartilhado de proxies operacionais."""
 
 from __future__ import annotations
 
@@ -7,14 +7,15 @@ from urllib.parse import unquote, urlsplit
 
 
 @dataclass(frozen=True, slots=True)
-class HttpProxy:
+class PortalProxy:
     host: str
     port: int
     username: str | None = field(default=None, repr=False)
     password: str | None = field(default=None, repr=False)
+    scheme: str = "http"
 
     def playwright_settings(self) -> dict[str, str]:
-        settings = {"server": f"http://{self.host}:{self.port}"}
+        settings = {"server": f"{self.scheme}://{self.host}:{self.port}"}
         if self.username is not None:
             settings["username"] = self.username
             settings["password"] = self.password or ""
@@ -26,13 +27,22 @@ class HttpProxy:
             return authority
         return f"{self.username}:{self.password or ''}@{authority}"
 
+    @property
+    def twocaptcha_type(self) -> str:
+        return "SOCKS5" if self.scheme == "socks5" else "HTTP"
 
-def parse_http_proxy(raw: str) -> HttpProxy:
-    """Aceita ``host:porta:usuario:senha`` ou URL HTTP autenticada."""
+    @property
+    def requires_http_bridge(self) -> bool:
+        return self.scheme == "socks5" and self.username is not None
+
+
+def parse_proxy(raw: str) -> PortalProxy:
+    """Aceita o formato legado HTTP ou URLs ``http``/``socks5``."""
     value = str(raw or "").strip()
     if not value:
         raise ValueError("proxy vazia")
     if "://" not in value:
+        scheme = "http"
         parts = value.split(":", 3)
         if len(parts) == 2:
             host, port_text = parts
@@ -43,8 +53,9 @@ def parse_http_proxy(raw: str) -> HttpProxy:
             raise ValueError("formato de proxy inválido")
     else:
         parsed = urlsplit(value)
-        if parsed.scheme.lower() != "http" or not parsed.hostname:
-            raise ValueError("somente proxy HTTP é aceita")
+        scheme = parsed.scheme.lower()
+        if scheme not in {"http", "socks5"} or not parsed.hostname:
+            raise ValueError("protocolo de proxy inválido")
         host = parsed.hostname
         try:
             port_text = str(parsed.port or "")
@@ -65,4 +76,10 @@ def parse_http_proxy(raw: str) -> HttpProxy:
         raise ValueError("credenciais de proxy incompletas")
     if username is not None and not username:
         raise ValueError("usuário de proxy inválido")
-    return HttpProxy(host=host, port=port, username=username, password=password)
+    return PortalProxy(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        scheme=scheme,
+    )

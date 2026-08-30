@@ -23,7 +23,7 @@ from consiglog.consiglog import (
 )
 from machine_admin.secret_store import get_runtime_secret
 from services.execution import ExecutionOutcome, OutcomeKind
-from services.proxy import parse_http_proxy
+from services.proxy import parse_proxy
 from workers.engine import AdapterError, CredentialPayload, WorkItem
 
 
@@ -40,7 +40,7 @@ def _proxy_settings() -> dict[str, str] | None:
     if not raw:
         return None
     try:
-        return parse_http_proxy(raw).playwright_settings()
+        return parse_proxy(raw).playwright_settings()
     except ValueError as exc:
         raise AdapterError(
             OutcomeKind.INTEGRATION_UNAVAILABLE,

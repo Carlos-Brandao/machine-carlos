@@ -8,7 +8,7 @@ import requests
 from dotenv import load_dotenv
 
 from machine_admin.secret_store import get_runtime_secret
-from services.proxy import HttpProxy
+from services.proxy import PortalProxy
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -31,7 +31,7 @@ def resolve_turnstile(
     page,
     selector: str = ".cf-turnstile",
     *,
-    proxy: HttpProxy | None = None,
+    proxy: PortalProxy | None = None,
 ) -> TurnstileSolution:
     """Resolve um Cloudflare Turnstile visível usando o cofre do sistema.
 
@@ -63,7 +63,7 @@ def resolve_turnstile(
         # pelo mesmo proxy durante todo o fluxo.
         submit_data.update(
             {
-                "proxytype": "HTTP",
+                "proxytype": proxy.twocaptcha_type,
                 "proxy": proxy.twocaptcha_value(),
             }
         )

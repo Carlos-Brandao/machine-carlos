@@ -305,7 +305,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allowed_scopes = {
             "TWOCAPTCHA_API_KEY": frozenset({"workers:execute"}),
             "CONSIGX_HTTPS_PROXY": frozenset({"workers:execute"}),
-            "SAFECONSIG_HTTP_PROXY": frozenset({"workers:execute"}),
+            "SAFECONSIG_PROXY": frozenset({"workers:execute"}),
             "TELEGRAM_BOT_TOKEN": frozenset({"jobs:write"}),
         }
         required = allowed_scopes.get(normalized)

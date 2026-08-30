@@ -38,7 +38,7 @@ SERVICE_KEYS: dict[str, set[str]] = {
         # Necessário apenas durante a transição para o cofre do painel.
         "TWOCAPTCHA_API_KEY",
         "CONSIGX_HTTPS_PROXY",
-        "SAFECONSIG_HTTP_PROXY",
+        "SAFECONSIG_PROXY",
         "TELEGRAM_BOT_TOKEN",
     },
     "worker": {
@@ -47,7 +47,7 @@ SERVICE_KEYS: dict[str, set[str]] = {
         "BACKEND_API_URL",
         "TWOCAPTCHA_API_KEY",
         "CONSIGX_HTTPS_PROXY",
-        "SAFECONSIG_HTTP_PROXY",
+        "SAFECONSIG_PROXY",
         "HEADLESS",
         "CAPTCHA_DEBUG",
         "WORKER_PLATFORMS",

@@ -9,7 +9,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from services.captcha import CaptchaError, TurnstileSolution, resolve_turnstile
 from services.execution import OutcomeKind
-from services.proxy import HttpProxy
+from services.proxy import PortalProxy
 from services.registry import MUNICIPALITIES
 from workers.adapters.safeconsig import (
     LOGIN_FIELD,
@@ -245,7 +245,7 @@ class SafeConsigAdapterTests(unittest.TestCase):
         ):
             solution = resolve_turnstile(
                 page,
-                proxy=HttpProxy(
+                proxy=PortalProxy(
                     "proxy.example",
                     10000,
                     username="worker",
@@ -280,7 +280,7 @@ class SafeConsigAdapterTests(unittest.TestCase):
         session.context = old_context
         session.page = old_page
         session.browser = Mock()
-        session.proxy = HttpProxy(
+        session.proxy = PortalProxy(
             "proxy.example", 10000, username="worker", password="secret"
         )
         session.browser.new_context.return_value = replacement_context

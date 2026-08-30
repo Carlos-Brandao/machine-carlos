@@ -18,7 +18,8 @@ from playwright.sync_api import sync_playwright
 from machine_admin.secret_store import get_runtime_secret
 from services.captcha import CaptchaError, resolve_turnstile
 from services.execution import ExecutionOutcome, OutcomeKind
-from services.proxy import HttpProxy, parse_http_proxy
+from services.proxy import PortalProxy, parse_proxy
+from services.proxy_bridge import Socks5HttpBridge
 from workers.engine import AdapterError, CredentialPayload, PortalSession, WorkItem
 
 
@@ -49,9 +50,9 @@ DETAIL_PANEL = "div.grid-colaborador"
 BROWSER_VIEWPORT = {"width": 1280, "height": 900}
 
 
-def _proxy_settings() -> HttpProxy:
+def _proxy_settings() -> PortalProxy:
     try:
-        return parse_http_proxy(get_runtime_secret("SAFECONSIG_HTTP_PROXY"))
+        return parse_proxy(get_runtime_secret("SAFECONSIG_PROXY"))
     except (RuntimeError, ValueError) as exc:
         raise AdapterError(
             OutcomeKind.INTEGRATION_UNAVAILABLE,
@@ -259,12 +260,18 @@ class SafeConsigSession(PortalSession):
         self.login_url = credential.login_url or DEFAULT_LOGIN_URL
         self.query_url = credential.query_url or DEFAULT_QUERY_URL
         self._playwright = self.browser = self.context = self.page = None
+        self.proxy_bridge = None
         try:
             self.proxy = _proxy_settings()
+            browser_proxy = self.proxy.playwright_settings()
+            if self.proxy.requires_http_bridge:
+                self.proxy_bridge = Socks5HttpBridge(self.proxy)
+                self.proxy_bridge.start()
+                browser_proxy = {"server": self.proxy_bridge.server_url}
             self._playwright = sync_playwright().start()
             self.browser = self._playwright.chromium.launch(
                 headless=os.getenv("HEADLESS", "true").lower() == "true",
-                proxy=self.proxy.playwright_settings(),
+                proxy=browser_proxy,
             )
             self.context = self.browser.new_context(viewport=BROWSER_VIEWPORT)
             self.page = self.context.new_page()
@@ -644,6 +651,13 @@ class SafeConsigSession(PortalSession):
             except Exception:
                 pass
             self._playwright = None
+        proxy_bridge = getattr(self, "proxy_bridge", None)
+        if proxy_bridge is not None:
+            try:
+                proxy_bridge.close()
+            except Exception:
+                pass
+            self.proxy_bridge = None
 
 
 class SafeConsigAdapter:

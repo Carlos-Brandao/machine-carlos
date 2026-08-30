@@ -244,11 +244,11 @@ class AdminCoreTests(unittest.TestCase):
 
         with patch("machine_admin.web.get_runtime_secret", return_value="proxy"):
             response = endpoint(
-                "SAFECONSIG_HTTP_PROXY",
+                "SAFECONSIG_PROXY",
                 ApiPrincipal("worker", frozenset({"workers:execute"})),
             )
         self.assertEqual(
-            {"key": "SAFECONSIG_HTTP_PROXY", "value": "proxy"},
+            {"key": "SAFECONSIG_PROXY", "value": "proxy"},
             json.loads(response.body),
         )
 
