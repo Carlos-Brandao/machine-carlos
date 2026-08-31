@@ -47,6 +47,11 @@ SEARCH_BUTTON = (
 )
 RESULT_TABLE = 'tbody[id="tabView:pesquisaMutuario:listaColaborador:input_data"]'
 DETAIL_PANEL = "div.grid-colaborador"
+MARGIN_VALUE_SELECTOR = (
+    'tr:has(span:has-text("Margem Líquida (Valor Disponível):")) '
+    "td:nth-child(2), "
+    'tr:has-text("Margem Líquida (Valor Disponível):") td:nth-child(2)'
+)
 BROWSER_VIEWPORT = {"width": 1280, "height": 900}
 
 
@@ -198,8 +203,7 @@ def _detail_payload(page: Page) -> dict[str, str]:
     ) or _labeled_value(text, "Matrícula", "Matricula")
     margin = _first_text(
         page,
-        'div.grid-colaborador tr:has(span:has-text("Margem Líquida '
-        '(Valor Disponível):")) td:nth-child(2)',
+        MARGIN_VALUE_SELECTOR,
     ) or _labeled_value(text, "Margem Líquida (Valor Disponível)")
     return {
         "CPF_Confirmado": cpf,

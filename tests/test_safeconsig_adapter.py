@@ -13,6 +13,7 @@ from services.proxy import PortalProxy
 from services.registry import MUNICIPALITIES
 from workers.adapters.safeconsig import (
     LOGIN_FIELD,
+    MARGIN_VALUE_SELECTOR,
     SafeConsigAdapter,
     SafeConsigResponseUnconfirmed,
     SafeConsigSession,
@@ -130,6 +131,8 @@ class SafeConsigAdapterTests(unittest.TestCase):
             "R$ 42,00",
             _labeled_value(text, "Margem Líquida (Valor Disponível)"),
         )
+        self.assertNotIn("grid-colaborador", MARGIN_VALUE_SELECTOR)
+        self.assertIn("Margem Líquida", MARGIN_VALUE_SELECTOR)
 
     def test_timeout_and_unknown_html_are_retryable_never_not_found(self) -> None:
         adapter = SafeConsigAdapter()
