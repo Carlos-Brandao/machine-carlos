@@ -50,13 +50,19 @@ DETAIL_PANEL = "div.grid-colaborador"
 BROWSER_VIEWPORT = {"width": 1280, "height": 900}
 
 
-def _proxy_settings() -> PortalProxy:
+def _proxy_settings() -> PortalProxy | None:
     try:
-        return parse_proxy(get_runtime_secret("SAFECONSIG_PROXY"))
-    except (RuntimeError, ValueError) as exc:
+        raw = get_runtime_secret("SAFECONSIG_PROXY")
+    except RuntimeError:
+        return None
+    if not raw:
+        return None
+    try:
+        return parse_proxy(raw)
+    except ValueError as exc:
         raise AdapterError(
             OutcomeKind.INTEGRATION_UNAVAILABLE,
-            "Proxy SafeConsig ausente ou inválida.",
+            "Proxy SafeConsig inválida.",
             code="safeconsig_proxy_invalid",
             retry_after_seconds=900,
         ) from exc
@@ -263,8 +269,10 @@ class SafeConsigSession(PortalSession):
         self.proxy_bridge = None
         try:
             self.proxy = _proxy_settings()
-            browser_proxy = self.proxy.playwright_settings()
-            if self.proxy.requires_http_bridge:
+            browser_proxy = None
+            if self.proxy is not None:
+                browser_proxy = self.proxy.playwright_settings()
+            if self.proxy is not None and self.proxy.requires_http_bridge:
                 self.proxy_bridge = Socks5HttpBridge(self.proxy)
                 self.proxy_bridge.start()
                 browser_proxy = {"server": self.proxy_bridge.server_url}
@@ -413,6 +421,24 @@ class SafeConsigSession(PortalSession):
                 previous_context.close()
             except PlaywrightError:
                 pass
+            # O primeiro token nasceu no contexto anterior. Gere um novo token
+            # na sessão definitiva para manter página, cookies e User-Agent
+            # coerentes na validação do SAFE.
+            solution = resolve_turnstile(
+                self.page,
+                '#idForm12344 .cf-turnstile',
+                proxy=self.proxy,
+            )
+            current_user_agent = str(
+                self.page.evaluate("navigator.userAgent") or ""
+            ).strip()
+            if (
+                solution.user_agent
+                and solution.user_agent != current_user_agent
+            ):
+                raise CaptchaError(
+                    "O solver alterou o User-Agent durante a confirmação."
+                )
         self.page.evaluate(
             """token => {
                 const form = document.getElementById('idForm12344');

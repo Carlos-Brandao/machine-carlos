@@ -19,6 +19,7 @@ from workers.adapters.safeconsig import (
     _explicit_not_found,
     _found_outcome,
     _labeled_value,
+    _proxy_settings,
     _turnstile_present,
     _turnstile_token_ready,
 )
@@ -276,6 +277,7 @@ class SafeConsigAdapterTests(unittest.TestCase):
         old_page = Mock()
         replacement_context = Mock()
         replacement_page = Mock()
+        replacement_page.evaluate.return_value = "Solver User Agent"
         replacement_context.new_page.return_value = replacement_page
         session.context = old_context
         session.page = old_page
@@ -308,7 +310,29 @@ class SafeConsigAdapterTests(unittest.TestCase):
             session.proxy,
             resolve_turnstile_mock.call_args.kwargs["proxy"],
         )
+        self.assertEqual(2, resolve_turnstile_mock.call_count)
         submit.assert_called_once_with(timeout=20_000)
+
+    def test_safeconsig_proxy_is_optional_but_invalid_value_is_explicit(self) -> None:
+        with patch(
+            "workers.adapters.safeconsig.get_runtime_secret",
+            side_effect=RuntimeError("not configured"),
+        ):
+            self.assertIsNone(_proxy_settings())
+
+        with patch(
+            "workers.adapters.safeconsig.get_runtime_secret",
+            return_value="",
+        ):
+            self.assertIsNone(_proxy_settings())
+
+        with patch(
+            "workers.adapters.safeconsig.get_runtime_secret",
+            return_value="invalid",
+        ):
+            with self.assertRaises(AdapterError) as raised:
+                _proxy_settings()
+        self.assertEqual("safeconsig_proxy_invalid", raised.exception.code)
 
     def test_query_redirect_to_login_is_retryable_session_expiry(self) -> None:
         class LoginRedirectPage:
