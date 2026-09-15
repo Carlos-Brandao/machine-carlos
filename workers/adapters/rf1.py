@@ -14,6 +14,7 @@ from rf1.rf1 import (
     DEFAULT_LOGIN_URL,
     DEFAULT_QUERY_URL,
     LOGIN_PATH,
+    RF1CredentialError,
     RF1Error,
     RF1NotFound,
     _consultar,
@@ -189,6 +190,15 @@ class RF1Adapter:
             return ExecutionOutcome.not_found(
                 requested=requested,
                 raw={"Status_Robo": "Não Encontrado"},
+            )
+        if isinstance(exc, RF1CredentialError):
+            return ExecutionOutcome.error(
+                OutcomeKind.CREDENTIAL_ERROR,
+                requested=requested,
+                code="rf1_credentials_rejected",
+                message=str(exc)[:500],
+                stage=stage,
+                end_session=True,
             )
         if isinstance(exc, PlaywrightTimeoutError):
             return ExecutionOutcome.error(

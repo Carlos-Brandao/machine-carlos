@@ -104,6 +104,10 @@ class RF1Error(RuntimeError):
     """Falha conhecida na navegação ou configuração do RF1."""
 
 
+class RF1CredentialError(RF1Error):
+    """O RF1 recusou a credencial com uma mensagem explícita."""
+
+
 class RF1NotFound(RF1Error):
     """O portal exibiu evidência explícita de servidor inexistente."""
 
@@ -124,6 +128,26 @@ def _has_explicit_not_found(page: Page) -> bool:
             "cpf nao encontrado",
         )
     )
+
+
+def _credential_rejection_message(page: Page) -> str | None:
+    """Traduz rejeições explícitas do login sem registrar dados sensíveis."""
+    text = _fold_text(page.locator("body").inner_text())
+    if "periodo para trocar sua senha expirou" in text or "senha expirou" in text:
+        return "A senha do portal RF1 expirou e precisa ser renovada."
+    if any(
+        marker in text
+        for marker in (
+            "usuario e/ou senha invalido",
+            "usuario ou senha invalido",
+            "senha invalida",
+            "usuario invalido",
+        )
+    ):
+        return "O portal RF1 recusou o usuário ou a senha."
+    if "usuario bloqueado" in text or "acesso bloqueado" in text:
+        return "A credencial do portal RF1 está bloqueada."
+    return None
 
 
 def _postback_observed(
@@ -248,6 +272,10 @@ def _login(
             return True
         except TimeoutError:
             pass
+
+        rejection = _credential_rejection_message(page)
+        if rejection:
+            raise RF1CredentialError(rejection)
 
         print(f"  [login] falhou (tentativa {tentativa})")
 

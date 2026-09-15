@@ -7,6 +7,7 @@ import unittest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from rf1.rf1 import (
+    _credential_rejection_message,
     RF1NotFound,
     _CPF_DEPENDENCIES_READY,
     _CPF_POSTBACK_OBSERVED,
@@ -92,6 +93,28 @@ class _FakePage:
 
 class RF1PostbackTests(unittest.TestCase):
     CPF = "79097596220"
+
+    def test_expired_password_is_an_explicit_credential_rejection(self) -> None:
+        page = _FakePage(
+            wait_results=[],
+            body_text="O período para trocar sua senha expirou.",
+        )
+
+        message = _credential_rejection_message(page)  # type: ignore[arg-type]
+
+        self.assertEqual(
+            "A senha do portal RF1 expirou e precisa ser renovada.", message
+        )
+
+    def test_regular_login_page_is_not_a_credential_rejection(self) -> None:
+        page = _FakePage(
+            wait_results=[],
+            body_text="Usuário (CPF): Senha: Esqueceu sua senha?",
+        )
+
+        self.assertIsNone(
+            _credential_rejection_message(page)  # type: ignore[arg-type]
+        )
 
     def test_previous_dependencies_are_part_of_postback_confirmation(self) -> None:
         old = {

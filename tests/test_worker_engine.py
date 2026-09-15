@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import requests
 
 from facil.facil import SearchResponseUnconfirmed, SearchResult, _explicit_not_found
-from rf1.rf1 import RF1NotFound
+from rf1.rf1 import RF1CredentialError, RF1NotFound
 from services.captcha import CaptchaError
 from services.execution import ExecutionOutcome, OutcomeKind
 from workers.adapters.facil import FacilSession, _login_without_side_effects
@@ -199,6 +199,13 @@ class ExecutionContractTests(unittest.TestCase):
         )
 
         self.assertEqual(OutcomeKind.NOT_FOUND, rf1.kind)
+
+        rejected = create_adapter("rf1").classify_exception(
+            RF1CredentialError("A senha do portal RF1 expirou e precisa ser renovada."),
+            stage="login",
+        )
+        self.assertEqual(OutcomeKind.CREDENTIAL_ERROR, rejected.kind)
+        self.assertEqual("rf1_credentials_rejected", rejected.error_code)
         self.assertEqual(OutcomeKind.RETRYABLE_ERROR, facil.kind)
 
     def test_captcha_http_failures_are_integration_outages(self) -> None:
