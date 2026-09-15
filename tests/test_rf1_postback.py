@@ -8,6 +8,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from rf1.rf1 import (
     _credential_rejection_message,
+    _has_active_session_conflict,
     RF1NotFound,
     _CPF_DEPENDENCIES_READY,
     _CPF_POSTBACK_OBSERVED,
@@ -114,6 +115,16 @@ class RF1PostbackTests(unittest.TestCase):
 
         self.assertIsNone(
             _credential_rejection_message(page)  # type: ignore[arg-type]
+        )
+
+    def test_active_session_message_allows_username_between_markers(self) -> None:
+        page = _FakePage(
+            wait_results=[],
+            body_text="O usuário 000.000.000-00 já se encontra logado;",
+        )
+
+        self.assertTrue(
+            _has_active_session_conflict(page)  # type: ignore[arg-type]
         )
 
     def test_previous_dependencies_are_part_of_postback_confirmation(self) -> None:

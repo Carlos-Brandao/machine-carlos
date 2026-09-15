@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import requests
 
 from facil.facil import SearchResponseUnconfirmed, SearchResult, _explicit_not_found
-from rf1.rf1 import RF1CredentialError, RF1NotFound
+from rf1.rf1 import RF1CredentialError, RF1NotFound, RF1SessionConflict
 from services.captcha import CaptchaError
 from services.execution import ExecutionOutcome, OutcomeKind
 from workers.adapters.facil import FacilSession, _login_without_side_effects
@@ -206,6 +206,14 @@ class ExecutionContractTests(unittest.TestCase):
         )
         self.assertEqual(OutcomeKind.CREDENTIAL_ERROR, rejected.kind)
         self.assertEqual("rf1_credentials_rejected", rejected.error_code)
+
+        session_conflict = create_adapter("rf1").classify_exception(
+            RF1SessionConflict("O usuário já possui outra sessão ativa."),
+            stage="login",
+        )
+        self.assertEqual(OutcomeKind.RETRYABLE_ERROR, session_conflict.kind)
+        self.assertEqual("rf1_session_already_active", session_conflict.error_code)
+        self.assertEqual(900, session_conflict.retry_after_seconds)
         self.assertEqual(OutcomeKind.RETRYABLE_ERROR, facil.kind)
 
     def test_captcha_http_failures_are_integration_outages(self) -> None:

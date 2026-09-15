@@ -17,6 +17,7 @@ from rf1.rf1 import (
     RF1CredentialError,
     RF1Error,
     RF1NotFound,
+    RF1SessionConflict,
     _consultar,
     _login,
     _logout,
@@ -198,6 +199,16 @@ class RF1Adapter:
                 code="rf1_credentials_rejected",
                 message=str(exc)[:500],
                 stage=stage,
+                end_session=True,
+            )
+        if isinstance(exc, RF1SessionConflict):
+            return ExecutionOutcome.error(
+                OutcomeKind.RETRYABLE_ERROR,
+                requested=requested,
+                code="rf1_session_already_active",
+                message=str(exc)[:500],
+                stage=stage,
+                retry_after_seconds=900,
                 end_session=True,
             )
         if isinstance(exc, PlaywrightTimeoutError):

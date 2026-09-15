@@ -108,6 +108,10 @@ class RF1CredentialError(RF1Error):
     """O RF1 recusou a credencial com uma mensagem explícita."""
 
 
+class RF1SessionConflict(RF1Error):
+    """O usuário já possui outra sessão ativa no RF1."""
+
+
 class RF1NotFound(RF1Error):
     """O portal exibiu evidência explícita de servidor inexistente."""
 
@@ -148,6 +152,14 @@ def _credential_rejection_message(page: Page) -> str | None:
     if "usuario bloqueado" in text or "acesso bloqueado" in text:
         return "A credencial do portal RF1 está bloqueada."
     return None
+
+
+def _has_active_session_conflict(page: Page) -> bool:
+    text = _fold_text(page.locator("body").inner_text())
+    return bool(
+        re.search(r"usuario.{0,100}ja se encontra logado", text)
+        or "ja existe uma sessao" in text
+    )
 
 
 def _postback_observed(
@@ -276,6 +288,10 @@ def _login(
         rejection = _credential_rejection_message(page)
         if rejection:
             raise RF1CredentialError(rejection)
+        if _has_active_session_conflict(page):
+            raise RF1SessionConflict(
+                "O usuário já possui outra sessão ativa no portal RF1."
+            )
 
         print(f"  [login] falhou (tentativa {tentativa})")
 
