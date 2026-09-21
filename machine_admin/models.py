@@ -276,7 +276,10 @@ class Job(TimestampMixin, Base):
     )
     telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    # The longest valid state is ``completed_with_errors`` (21 characters).
+    # Keep some headroom so adding another explicit workflow state does not
+    # make the queue API fail while persisting a terminal job.
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     total_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
