@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from services.execution import ExecutionOutcome, OutcomeKind
+from services.cancellation import OperationCancelled, cancellation_scope, check_cancelled
 from services.utils import mask_cpf
 from workers.api_client import WorkerAPIClient, WorkerAPIConflict, WorkerAPIError
 
@@ -214,10 +215,24 @@ class GenericWorker:
             if self._should_drain():
                 return False
             try:
-                session = self.adapter.open_session(credential)
+                with cancellation_scope(self._should_drain,
+                                        timeout_seconds=min(float(check.get('timeout_seconds', 300)), 300)):
+                    session = self.adapter.open_session(credential)
+                    check_cancelled()
+            except OperationCancelled as exc:
+                if exc.timed_out and not self._should_drain():
+                    self._durable_request("POST", f"/api/workers/access-checks/{check['check_id']}/complete", json={
+                        "worker_id": self.worker_id,
+                        "credential_lease_token": credential.lease_token,
+                        "outcome": "transient_failure", "error_code": "test_timeout",
+                        "message": "Tempo limite do teste de acesso atingido.",
+                    })
+                return False
             except Exception as exc:
+                if self._should_drain():
+                    return False
                 outcome = self.adapter.classify_exception(exc, stage="login")
-            if not self._lease_lost.is_set():
+            if not self._should_drain():
                 self._durable_request("POST", f"/api/workers/access-checks/{check['check_id']}/complete", json={
                     "worker_id": self.worker_id,
                     "credential_lease_token": credential.lease_token,
@@ -264,8 +279,19 @@ class GenericWorker:
             if self._should_drain():
                 return False
             try:
-                session = self.adapter.open_session(credential)
+                with cancellation_scope(self._should_drain, timeout_seconds=300):
+                    session = self.adapter.open_session(credential)
+                    check_cancelled()
+            except OperationCancelled as exc:
+                if exc.timed_out and not self._should_drain():
+                    self._report_session_failure(credential.credential_id, ExecutionOutcome.error(
+                        OutcomeKind.RETRYABLE_ERROR, code="login_timeout",
+                        message="Tempo limite do login atingido.", stage="login",
+                        retry_after_seconds=900, end_session=True))
+                return False
             except Exception as exc:
+                if self._should_drain():
+                    return False
                 outcome = self.adapter.classify_exception(exc, stage="login")
                 self._report_session_failure(credential.credential_id, outcome)
                 return False

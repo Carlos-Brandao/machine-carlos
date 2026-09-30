@@ -1703,12 +1703,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # expira. Cliques concorrentes são serializados pela linha da execução.
         job = session.scalar(select(Job).where(Job.id == job.id).with_for_update())
         if action in {"pause", "cancel"}:
-            if action == "pause" and job.status not in {"queued", "running"}:
-                raise ValueError("Apenas consultas em fila ou execução podem ser pausadas.")
+            if action == "pause" and job.status == "paused":
+                return "A consulta já está pausada. O progresso foi preservado."
+            if action == "pause" and job.status == "pausing":
+                return "A pausa já foi solicitada. Aguardando finalizar a consulta atual e encerrar a sessão."
+            if action == "pause" and job.status not in {"queued", "running", "blocked", "awaiting_dataset"}:
+                raise ValueError("Apenas consultas em espera ou execução podem ser pausadas.")
             if action == "cancel" and job.status in {"completed", "cancelled", "cancelling"}:
                 raise ValueError("Esta consulta não pode mais ser interrompida.")
             request_job_drain(session, job, cancel=action == "cancel")
-            message = ("Pausa solicitada. As sessões estão sendo encerradas."
+            message = (("Consulta pausada. O progresso foi preservado." if job.status == "paused"
+                        else "Pausa solicitada. Aguardando finalizar a consulta atual e encerrar a sessão; nenhum novo item será iniciado.")
                        if action == "pause" else "Interrupção solicitada. Os resultados já obtidos serão preservados.")
         elif action == "resume":
             if job.status not in {"paused", "blocked"}:
@@ -2244,14 +2249,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session, worker_id=payload.worker_id, lease_seconds=payload.lease_seconds,
             credential_lease_token=payload.credential_lease_token,
         )
-        session.commit()
         if not ok:
+            session.rollback()
             raise HTTPException(status_code=409, detail="Reserva expirada ou substituída.")
         lease = session.scalar(select(CredentialLease).where(
             CredentialLease.worker_id == payload.worker_id,
             CredentialLease.lease_token == payload.credential_lease_token))
         job = session.get(Job, lease.job_id) if lease and lease.job_id else None
-        return {"ok": True, "drain_requested": bool(job and job.status not in {"queued", "running"})}
+        from machine_admin.access_checks import access_check_should_drain
+        drain_requested = (bool(job and job.status not in {"queued", "running"})
+                           or bool(lease and not lease.job_id and access_check_should_drain(session, lease)))
+        session.commit()
+        return {"ok": True, "drain_requested": drain_requested}
 
     @app.post("/api/workers/credentials/report")
     def worker_report_credential(

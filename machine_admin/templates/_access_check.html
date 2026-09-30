@@ -1,0 +1,32 @@
+{% macro access_check_panel(credential, checks, csrf_token, can_manage=false, compact=false) -%}
+{% set latest = checks[0] if checks else none %}
+{% set active = latest and latest.status in ['queued', 'running', 'cancelling'] %}
+{% set labels = {'queued':'Na fila', 'running':'Testando login', 'cancelling':'Cancelando teste', 'cancelled':'Teste cancelado', 'success':'Login confirmado', 'failed':'Login não confirmado'} %}
+<section class="access-check-panel {{ 'compact' if compact else '' }}" {% if can_manage %}data-access-check-monitor data-credential-id="{{ credential.id }}"{% endif %} aria-label="Teste de acesso">
+  <div class="access-check-current" role="status" aria-live="polite">
+    <strong data-access-check-state>{{ labels.get(latest.status, latest.status) if latest else 'Nenhum teste solicitado' }}</strong>
+    <p data-access-check-message>{{ latest.message or '' if latest else 'O teste verifica somente o login, sem consultar a base.' }}</p>
+    <small data-access-check-time>{% if latest and latest.created_at %}Solicitado em {{ latest.created_at.strftime('%d/%m/%Y %H:%M:%S') }}{% endif %}</small>
+    <small data-access-check-code {% if not latest or not latest.error_code %}hidden{% endif %}>{% if latest and latest.error_code %}Código do diagnóstico: {{ latest.error_code }}{% endif %}</small>
+    <a data-access-check-blocking-job hidden>Abrir consulta que está usando este acesso</a>
+  </div>
+  {% if can_manage %}
+  <div class="job-actions">
+    <form method="post" action="/admin/credentials/{{ credential.id }}/test" data-access-check-start>
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="small ghost" data-access-check-start-button {% if active or credential.status == 'disabled' %}disabled{% endif %}>Testar acesso</button>
+    </form>
+    <form method="post" action="/admin/credentials/{{ credential.id }}/tests/{{ latest.id if latest else 0 }}/cancel" data-access-check-cancel {% if not latest or latest.status not in ['queued','running'] %}hidden{% endif %}>
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="small danger-outline" data-access-check-cancel-button>Cancelar teste</button>
+    </form>
+  </div>
+  <p class="field-help" data-access-check-reason>{% if latest and latest.status == 'cancelling' %}Aguardando encerrar a sessão do portal com segurança.{% elif active %}Já existe um teste ativo. Aguarde o resultado ou cancele.{% elif credential.status == 'disabled' %}Reative este acesso antes de testar.{% else %}Testa login; pode consumir um captcha, sem consultar a base.{% endif %}</p>
+  <small class="muted" data-access-check-refresh>O resultado é atualizado automaticamente.</small>
+  {% endif %}
+  {% if not compact %}
+  <p class="muted">Cancelar não pausa uma consulta nem desativa o acesso. Um teste de login não pode ser retomado; após cancelar, um novo teste começa do início.</p>
+  <details class="row-details"><summary>Histórico de testes</summary><ol class="access-check-history" data-access-check-history>{% for check in checks %}<li><strong>{{ labels.get(check.status, check.status) }}</strong>{% if check.created_at %}<time>{{ check.created_at.strftime('%d/%m/%Y %H:%M:%S') }}</time>{% endif %}<span>{{ check.message or '' }}</span></li>{% else %}<li>Nenhum teste solicitado.</li>{% endfor %}</ol></details>
+  {% endif %}
+</section>
+{%- endmacro %}

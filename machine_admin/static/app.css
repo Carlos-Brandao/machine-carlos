@@ -281,6 +281,14 @@ tbody tr:hover:not(.filter-empty) { background: #fafcfd; }
 .credential-row > div:first-child span { color: var(--muted); font-size: 11px; }
 .credential-row > div:nth-child(2) { display: grid; justify-items: start; gap: 5px; }
 .credential-meta { display: grid; color: var(--muted); font-size: 11px; }
+.access-check-panel { display: grid; gap: 10px; min-width: 0; }
+.access-check-panel.compact { grid-column: 1 / -1; padding-top: 12px; border-top: 1px solid var(--line); }
+.access-check-current { display: grid; gap: 5px; }
+.access-check-current p, .access-check-panel .field-help { margin: 0; overflow-wrap: anywhere; }
+.access-check-current small { color: var(--muted); overflow-wrap: anywhere; }
+.access-check-history { display: grid; gap: 12px; padding-left: 20px; }
+.access-check-history li { overflow-wrap: anywhere; }
+.access-check-history time, .access-check-history span { display: block; margin-top: 4px; color: var(--muted); }
 
 .processor-grid { display: grid; grid-template-columns: repeat(2, minmax(300px, 1fr)); gap: 14px; }
 .rule-panel { padding: 17px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }

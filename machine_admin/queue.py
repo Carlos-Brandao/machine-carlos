@@ -379,6 +379,10 @@ def release_credential(
     session.flush()
     if job_id is not None:
         finalize_draining_job(session, job_id)
+    else:
+        from machine_admin.access_checks import finalize_released_access_check
+        finalize_released_access_check(session, worker_id=worker_id,
+                                      lease_token=credential_lease_token)
 
 
 def request_job_drain(session: Session, job: Job, *, cancel: bool = False) -> str:

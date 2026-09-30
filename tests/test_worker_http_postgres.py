@@ -18,6 +18,8 @@ from machine_admin.models import (AccessCheck, AdminUser, CredentialLease, Datas
 from machine_admin.security import SecretCipher
 from machine_admin.services import issue_api_token
 from machine_admin.web import create_app
+from machine_admin.access_checks import (cancel_access_check, expire_access_checks,
+    _serialize_check, _test_policy)
 from tests import test_postgres_acceptance as queue_acceptance
 
 
@@ -154,9 +156,103 @@ class WorkerHTTPPostgres(unittest.TestCase):
                 self.assertIsNotNone(credential.last_validated_at)
                 # Login success does not release the account before logout.
                 self.assertIsNotNone(session.get(CredentialLease, credential_id))
+                completed_check = session.get(AccessCheck, check_id)
+                self.assertFalse(_serialize_check(session, completed_check)['can_cancel'])
+                self.assertEqual('success', cancel_access_check(session, completed_check))
                 self.assertTrue(all(item.attempts == 0 for item in session.scalars(
                     select(JobItem).where(JobItem.job_id == job_id))))
             released = client.post('/api/workers/release', json=common)
             self.assertEqual(200, released.status_code, released.text)
             with Session(self.engine) as session:
                 self.assertIsNone(session.get(CredentialLease, credential_id))
+
+    def test_access_check_queued_cancel_is_immediate_and_does_not_mutate_credential(self):
+        with self.fixture() as (client, job_id, slug, worker):
+            with Session(self.engine) as session, session.begin():
+                credential_id = session.get(Job, job_id).selected_credential_ids[0]
+                check = AccessCheck(credential_id=credential_id, status='queued')
+                session.add(check)
+                session.flush()
+                self.assertEqual('cancelled', cancel_access_check(session, check))
+                self.assertIsNone(session.get(CredentialLease, credential_id))
+                credential = session.get(PortalCredential, credential_id)
+                self.assertEqual('active', credential.status)
+                self.assertTrue(_test_policy(credential, check, session)[0])
+                self.assertTrue(all(item.attempts == 0 for item in session.scalars(
+                    select(JobItem).where(JobItem.job_id == job_id))))
+
+    def test_access_check_cancel_and_deadline_preserve_lease_until_closed(self):
+        for reason in ('cancel', 'timeout'):
+            with self.subTest(reason=reason), self.fixture() as (client, job_id, slug, worker):
+                with Session(self.engine) as session, session.begin():
+                    credential_id = session.get(Job, job_id).selected_credential_ids[0]
+                    check = AccessCheck(credential_id=credential_id, status='queued')
+                    session.add(check)
+                    session.flush()
+                    check_id = check.id
+                claimed = client.post('/api/workers/access-checks/claim', json={
+                    'worker_id':worker, 'platform_slug':'rf1'})
+                self.assertEqual(200, claimed.status_code, claimed.text)
+                self.assertEqual(check_id, claimed.json()['check_id'])
+                token = claimed.json()['credential']['lease_token']
+                common = {'worker_id':worker, 'credential_lease_token':token}
+                with Session(self.engine) as session, session.begin():
+                    check = session.get(AccessCheck, check_id)
+                    if reason == 'cancel':
+                        self.assertEqual('cancelling', cancel_access_check(session, check))
+                    else:
+                        check.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                heartbeat = client.post('/api/workers/heartbeat', json=common)
+                self.assertEqual(200, heartbeat.status_code, heartbeat.text)
+                self.assertTrue(heartbeat.json()['drain_requested'])
+                # A failed response from the aborted login cannot invalidate the
+                # access or overwrite a cancellation requested by the operator.
+                late = client.post(f'/api/workers/access-checks/{check_id}/complete', json={
+                    **common, 'outcome':'invalid_credentials', 'message':'aborted page'})
+                self.assertEqual(200, late.status_code, late.text)
+                self.assertEqual('cancelling', late.json()['status'])
+                with Session(self.engine) as session:
+                    self.assertIsNotNone(session.get(CredentialLease, credential_id))
+                    credential = session.get(PortalCredential, credential_id)
+                    self.assertEqual('active', credential.status)
+                    self.assertEqual(0, credential.login_failure_count)
+                released = client.post('/api/workers/release', json=common)
+                self.assertEqual(200, released.status_code, released.text)
+                with Session(self.engine) as session:
+                    check = session.get(AccessCheck, check_id)
+                    self.assertEqual('cancelled' if reason == 'cancel' else 'failed', check.status)
+                    if reason == 'timeout':
+                        self.assertEqual('test_timeout', check.error_code)
+                    self.assertIsNone(session.get(CredentialLease, credential_id))
+                    self.assertEqual(0, session.get(Job, job_id).completed_items)
+
+    def test_check_status_serializer_explains_busy_job_without_writes(self):
+        with self.fixture() as (client, job_id, slug, worker):
+            acquired = client.post('/api/workers/credentials/acquire', json={
+                'worker_id':worker, 'job_id':job_id, 'municipality_slug':slug})
+            self.assertEqual(200, acquired.status_code, acquired.text)
+            credential_id = acquired.json()['credential_id']
+            with Session(self.engine) as session, session.begin():
+                check = AccessCheck(credential_id=credential_id, status='queued')
+                session.add(check)
+                session.flush()
+                payload = _serialize_check(session, check)
+                self.assertEqual(job_id, payload['blocking_job_id'])
+                self.assertIn(f'#{job_id}', payload['message'])
+                self.assertEqual('queued', check.status)
+                self.assertFalse(session.dirty)
+
+    def test_cancelled_expired_check_cannot_release_a_new_generation(self):
+        with self.fixture() as (client, job_id, slug, worker):
+            with Session(self.engine) as session, session.begin():
+                credential_id = session.get(Job, job_id).selected_credential_ids[0]
+                check = AccessCheck(credential_id=credential_id, status='cancelling',
+                    worker_id=worker, lease_token='old'*16, started_at=datetime.now(UTC))
+                session.add(check)
+                session.add(CredentialLease(credential_id=credential_id, worker_id='new-check-worker',
+                    lease_token='new'*16, job_id=None, heartbeat_at=datetime.now(UTC),
+                    expires_at=datetime.now(UTC)+timedelta(minutes=2)))
+                session.flush()
+                expire_access_checks(session)
+                self.assertEqual('cancelled', check.status)
+                self.assertEqual('new'*16, session.get(CredentialLease, credential_id).lease_token)

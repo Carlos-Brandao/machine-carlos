@@ -47,6 +47,15 @@ Mesmo em ready, um job só pode iniciar quando:
 
 O painel mostra a causa e a próxima ação de cada bloqueio.
 
+## Teste de acesso
+
+- Testar acesso verifica somente o login; não consulta a base nem retoma uma consulta pausada.
+- Se o login estiver ocupado, o painel informa qual consulta está usando-o.
+- Um teste pode ser cancelado. O acesso só é liberado depois de fechar a sessão ou expirar a reserva.
+- Testes não têm progresso retomável; um novo teste é uma nova autenticação e pode consumir captcha.
+- O estado é atualizado automaticamente. O limite do teste em execução é cinco minutos; o encerramento respeita os timeouts da operação de rede em andamento.
+- Cancelar não marca a senha como inválida. Cancelar um teste que ainda não começou permite novo teste sem a espera anti-repetição; testes iniciados mantêm a proteção de 15 minutos.
+
 ## Entrada e bases
 
 - A primeira coluna é sempre CPF.

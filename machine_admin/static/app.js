@@ -75,6 +75,46 @@
   document.querySelectorAll("[data-filter-target]").forEach(function (control) {
     applyFilters(control.dataset.filterTarget);
   });
+
+  var jobList = document.querySelector("[data-job-list]");
+  if (jobList) {
+    var listTimer; var listClosed = false; var listBusy = false; var listPointerDown = false;
+    var listStatus = document.querySelector("[data-job-list-refresh-status]");
+    async function refreshJobList() {
+      if (listClosed || listBusy) return;
+      window.clearTimeout(listTimer);
+      listBusy = true;
+      var controller = new AbortController();
+      var timeout = window.setTimeout(function () { controller.abort(); }, 15000);
+      try {
+        var response = await fetch("/admin/jobs", {credentials:"same-origin", cache:"no-store", signal:controller.signal});
+        if (response.status === 401 || (response.redirected && new URL(response.url).pathname === "/login")) {
+          listClosed = true; throw new Error("Sua sessão expirou. Entre novamente para acompanhar.");
+        }
+        if (!response.ok) throw new Error("Não foi possível atualizar agora. Tentaremos novamente.");
+        var page = new DOMParser().parseFromString(await response.text(), "text/html");
+        var updated = page.querySelector("[data-job-list]");
+        if (!updated) throw new Error("Não foi possível atualizar a lista. Atualize a página.");
+        if (listClosed || listPointerDown) return;
+        jobList.replaceChildren(...Array.from(updated.childNodes).map(function (node) { return document.importNode(node, true); }));
+        applyFilters("jobs");
+        listStatus.textContent = "Atualizado às " + new Date().toLocaleTimeString("pt-BR") + ". Próxima atualização em 5 segundos.";
+      } catch (error) { listStatus.textContent = error.name === "AbortError" ? "Atualização lenta. Tentando novamente…" : error.message; }
+      finally { window.clearTimeout(timeout); listBusy = false; if (!listClosed) listTimer = window.setTimeout(refreshJobList, 5000); }
+    }
+    document.querySelector("[data-job-list-refresh]").addEventListener("click", refreshJobList);
+    jobList.addEventListener("pointerdown", function () { listPointerDown = true; });
+    window.addEventListener("pointerup", function () { listPointerDown = false; });
+    window.addEventListener("pointercancel", function () { listPointerDown = false; });
+    jobList.addEventListener("submit", function (event) {
+      if (event.defaultPrevented || !event.target.matches("[data-job-list-pause]")) return;
+      listClosed = true; window.clearTimeout(listTimer);
+      event.target.querySelector("button").disabled = true;
+      listStatus.textContent = "Solicitando pausa. Aguarde a confirmação…";
+    });
+    window.addEventListener("pagehide", function () { listClosed = true; window.clearTimeout(listTimer); });
+    refreshJobList();
+  }
 })();
 
 (function () {
@@ -153,6 +193,12 @@
     if (capacityNote) capacityNote.textContent = "Solicitado: " + summary.max_parallel_accounts + " simultâneo(s). Disponível agora: até " + (capacity.effective_limit || 0) + ". Limite do convênio: " + (capacity.agreement_limit || 0) + ".";
     monitor.querySelector("[data-job-reason-title]").textContent = execution.executable ? (summary.status === "running" ? "Em execução" : "Pronta para iniciar") : "Estado da execução";
     monitor.querySelector("[data-job-reason-text]").textContent = execution.reason || labels[summary.status] || summary.status;
+    var draining = monitor.querySelector("[data-job-draining]");
+    if (draining) {
+      draining.hidden = !["pausing", "cancelling"].includes(summary.status);
+      var openAccounts = (summary.accounts || []).filter(function (account) { return account.in_use && account.current_job_id === Number(jobId); });
+      draining.textContent = "Pedido recebido. " + (openAccounts.length ? "Encerrando " + openAccounts.length + " sessão(ões) do portal com segurança." : "Aguardando a confirmação final do encerramento.") + " Os resultados já obtidos serão preservados. Não é necessário clicar novamente.";
+    }
     monitor.querySelectorAll("[data-job-action]").forEach(function (node) { node.hidden = !node.dataset.states.split(",").includes(summary.status); });
     var accounts = monitor.querySelector("[data-account-rows]"); accounts.replaceChildren();
     (summary.accounts || []).forEach(function (account) {
@@ -215,6 +261,70 @@
   monitor.querySelector("[data-results-refresh]").addEventListener("click", function () { loadResults(true); });
   monitor.querySelector("[data-result-outcome]").addEventListener("change", function () { loadResults(true); });
   monitor.querySelector("[data-results-next]").addEventListener("click", function () { loadResults(false); });
+  monitor.querySelectorAll("form[data-job-action]").forEach(function (form) {
+    form.addEventListener("submit", function (event) {
+      if (event.defaultPrevented) return;
+      monitor.querySelectorAll("form[data-job-action] button").forEach(function (button) { button.disabled = true; });
+      monitor.querySelector("[data-refresh-status]").textContent = "Enviando pedido. Aguarde a confirmação…";
+    });
+  });
   window.addEventListener("pagehide", function () { closed = true; window.clearTimeout(timer); });
   poll();
+})();
+
+(function () {
+  "use strict";
+  var labels = {queued:"Na fila", running:"Testando login", cancelling:"Cancelando teste", cancelled:"Teste cancelado", success:"Login confirmado", failed:"Login não confirmado"};
+  function time(value) { return value ? new Date(value).toLocaleString("pt-BR") : ""; }
+  function node(tag, text) { var result = document.createElement(tag); result.textContent = text; return result; }
+  document.querySelectorAll("[data-access-check-monitor]").forEach(function (panel) {
+    var credentialId = panel.dataset.credentialId;
+    var timer; var closed = false; var submitting = false;
+    var start = panel.querySelector("[data-access-check-start-button]");
+    var cancelForm = panel.querySelector("[data-access-check-cancel]");
+    var refresh = panel.querySelector("[data-access-check-refresh]");
+    function update(data) {
+      var latest = data.latest;
+      panel.querySelector("[data-access-check-state]").textContent = latest ? (labels[latest.status] || latest.status) : "Nenhum teste solicitado";
+      panel.querySelector("[data-access-check-message]").textContent = latest ? (latest.message || "") : "O teste verifica somente o login, sem consultar a base.";
+      var stamps = [];
+      if (latest) { if (latest.created_at) stamps.push("Solicitado: " + time(latest.created_at)); if (latest.started_at) stamps.push("Iniciado: " + time(latest.started_at)); if (latest.finished_at) stamps.push("Finalizado: " + time(latest.finished_at)); }
+      panel.querySelector("[data-access-check-time]").textContent = stamps.join(" · ");
+      var code = panel.querySelector("[data-access-check-code]");
+      code.hidden = !latest || !latest.error_code;
+      code.textContent = latest && latest.error_code ? "Código do diagnóstico: " + latest.error_code : "";
+      var blocking = panel.querySelector("[data-access-check-blocking-job]");
+      blocking.hidden = !latest || !latest.blocking_job_id;
+      if (latest && latest.blocking_job_id) { blocking.href = "/admin/consultations/" + latest.blocking_job_id; blocking.textContent = "Abrir consulta #" + latest.blocking_job_id; }
+      start.disabled = submitting || !data.can_test;
+      cancelForm.hidden = !latest || !latest.can_cancel;
+      if (latest) cancelForm.action = "/admin/credentials/" + credentialId + "/tests/" + latest.id + "/cancel";
+      var reason = data.reason || "Testa login; pode consumir um captcha, sem consultar a base.";
+      if (latest && latest.session_closing) reason = "Encerrando a sessão do portal com segurança. Aguarde a liberação do acesso; não é necessário clicar novamente.";
+      if (data.retry_after_seconds > 0 && !(latest && ["queued", "running", "cancelling"].includes(latest.status))) reason += " Novo teste em aproximadamente " + Math.ceil(data.retry_after_seconds / 60) + " minuto(s).";
+      panel.querySelector("[data-access-check-reason]").textContent = reason;
+      var history = panel.querySelector("[data-access-check-history]");
+      if (history) {
+        history.replaceChildren();
+        (data.checks || []).forEach(function (check) { var entry = node("li", ""); entry.append(node("strong", labels[check.status] || check.status), node("time", time(check.created_at)), node("span", check.message || "")); history.append(entry); });
+        if (!history.children.length) history.append(node("li", "Nenhum teste solicitado."));
+      }
+      refresh.textContent = "Atualizado às " + new Date().toLocaleTimeString("pt-BR") + ". Atualização automática a cada 5 segundos.";
+    }
+    async function poll() {
+      if (closed || submitting) return;
+      var controller = new AbortController();
+      var timeout = window.setTimeout(function () { controller.abort(); }, 15000);
+      try {
+        var response = await fetch("/admin/credentials/" + credentialId + "/test-status", {credentials:"same-origin", cache:"no-store", headers:{Accept:"application/json"}, signal:controller.signal});
+        if ([401, 403].includes(response.status) || (response.redirected && new URL(response.url).pathname === "/login")) { closed = true; throw new Error("Entre novamente com um usuário administrador para acompanhar o teste."); }
+        if (!response.ok) throw new Error("Não foi possível atualizar o teste agora. Tentaremos novamente.");
+        update(await response.json());
+      } catch (error) { refresh.textContent = error.name === "AbortError" ? "Atualização lenta. Tentando novamente…" : error.message; }
+      finally { window.clearTimeout(timeout); if (!closed && !submitting) timer = window.setTimeout(poll, 5000); }
+    }
+    panel.querySelectorAll("form").forEach(function (form) { form.addEventListener("submit", function (event) { if (event.defaultPrevented) return; submitting = true; window.clearTimeout(timer); panel.querySelectorAll("button").forEach(function (button) { button.disabled = true; }); refresh.textContent = "Enviando pedido. Aguarde a confirmação…"; }); });
+    window.addEventListener("pagehide", function () { closed = true; window.clearTimeout(timer); });
+    poll();
+  });
 })();

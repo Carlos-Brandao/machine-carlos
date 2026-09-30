@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import threading
 from unittest.mock import Mock, patch
 
 from consiglog.consiglog import (
@@ -12,15 +13,30 @@ from consiglog.consiglog import (
     _configured_login_profile,
     _consult,
     _has_substantive_result,
+    _login,
     _pick_explicit_cpf,
     _validate_confirmed_result,
 )
 from services.execution import OutcomeKind
+from services.cancellation import OperationCancelled, cancellation_scope
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from workers.adapters.consiglog import ConsiglogAdapter
 from workers.engine import WorkItem
 
 
 class ConsiglogProfileTests(unittest.TestCase):
+    def test_cancel_stops_login_before_another_navigation_attempt(self) -> None:
+        stop = threading.Event()
+        page = Mock()
+        def navigation(*args, **kwargs):
+            stop.set()
+            raise PlaywrightTimeoutError("synthetic timeout")
+        page.goto.side_effect = navigation
+        with patch("consiglog.consiglog.get_runtime_secret", return_value="configured"), patch("consiglog.consiglog._visible", return_value=False):
+            with self.assertRaises(OperationCancelled), cancellation_scope(stop.is_set, timeout_seconds=300):
+                _login(page, "https://portal.invalid/login", "synthetic-user", "synthetic-password")
+        self.assertEqual(1, page.goto.call_count)
+
     def test_profile_supports_current_and_legacy_setting_names(self) -> None:
         self.assertEqual(
             "Perfil atual",

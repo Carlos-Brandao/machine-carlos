@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from machine_admin.secret_store import get_runtime_secret
 from services.proxy import PortalProxy
+from services.cancellation import cancellation_wait, check_cancelled
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -39,6 +40,7 @@ def resolve_turnstile(
     O token é devolvido ao adapter, que conhece o formulário correto e faz a
     submissão. Nenhum segredo ou token é escrito em log/arquivo.
     """
+    check_cancelled()
     api_key = get_runtime_secret("TWOCAPTCHA_API_KEY")
     if not api_key:
         raise CaptchaError("TWOCAPTCHA_API_KEY não configurada.")
@@ -67,6 +69,7 @@ def resolve_turnstile(
                 "proxy": proxy.twocaptcha_value(),
             }
         )
+    check_cancelled()
     response = requests.post(
         TWOCAPTCHA_SUBMIT_URL,
         data=submit_data,
@@ -83,7 +86,7 @@ def resolve_turnstile(
         )
     captcha_id = data["request"]
     for _ in range(30):
-        time.sleep(5)
+        cancellation_wait(5, sleep=time.sleep)
         result = requests.get(
             TWOCAPTCHA_RESULT_URL,
             params={
@@ -95,6 +98,7 @@ def resolve_turnstile(
             timeout=TWOCAPTCHA_HTTP_TIMEOUT,
         )
         result.raise_for_status()
+        check_cancelled()
         try:
             data = result.json()
         except ValueError as exc:
@@ -116,12 +120,14 @@ def resolve_turnstile(
 
 
 def _solve_2captcha(img_bytes: bytes, regsense: int = 0) -> str:
+    check_cancelled()
     api_key = get_runtime_secret("TWOCAPTCHA_API_KEY")
     if not api_key:
         raise CaptchaError("TWOCAPTCHA_API_KEY não configurada.")
     if not img_bytes:
         raise CaptchaError("A imagem do captcha está vazia.")
     img_b64 = base64.b64encode(img_bytes).decode()
+    check_cancelled()
     resp = requests.post(TWOCAPTCHA_SUBMIT_URL, data={
         "key": api_key,
         "method": "base64",
@@ -141,7 +147,7 @@ def _solve_2captcha(img_bytes: bytes, regsense: int = 0) -> str:
     print(f"  [2captcha] Aguardando resolução (id={captcha_id})...")
 
     for _ in range(24):
-        time.sleep(5)
+        cancellation_wait(5, sleep=time.sleep)
         res = requests.get(TWOCAPTCHA_RESULT_URL, params={
             "key": api_key,
             "action": "get",
@@ -149,6 +155,7 @@ def _solve_2captcha(img_bytes: bytes, regsense: int = 0) -> str:
             "json": 1,
         }, timeout=TWOCAPTCHA_HTTP_TIMEOUT)
         res.raise_for_status()
+        check_cancelled()
         try:
             data = res.json()
         except ValueError as exc:
@@ -165,6 +172,7 @@ def _solve_2captcha(img_bytes: bytes, regsense: int = 0) -> str:
 
 
 async def resolve_captcha(page, base_url: str, selector: str = "img.imagem-captcha") -> str:
+    check_cancelled()
     el = page.locator(selector)
     await el.wait_for(state="visible", timeout=10_000)
 

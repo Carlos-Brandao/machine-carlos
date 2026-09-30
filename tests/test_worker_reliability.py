@@ -11,6 +11,8 @@ from machine_admin.models import PortalCredential
 from machine_admin.queue import apply_credential_report, complete_job_item, requeue_job_item
 from run_worker import drain_excess_slots
 from services.execution import ExecutionOutcome, OutcomeKind
+from services.cancellation import OperationCancelled, cancellation_scope, check_cancelled
+from services.captcha import _solve_2captcha
 from tests.test_queue_counter_deltas import QueueSession, _item, _job
 from tests.test_worker_engine import FakeAPI, FakeAdapter, FakeSession, make_worker
 from workers.api_client import WorkerAPIError
@@ -91,6 +93,43 @@ class WorkerReliabilityTests(unittest.TestCase):
         self.assertEqual(2, len(attempts))
         self.assertEqual(attempts[0], attempts[1])
         self.assertEqual([], session.outcomes)
+
+    def test_cancel_after_login_closes_session_and_never_reports_bad_password(self):
+        api = FakeAPI()
+        session = FakeSession([])
+        class CancellingLogin(FakeAdapter):
+            def open_session(self, credential):
+                worker._drain_event.set()
+                return self.session
+        worker = GenericWorker(api, 'check-cancel-worker', threading.Event(), CancellingLogin(session))
+        result = worker._process_access_check({'check_id': 5, 'credential': {
+            'credential_id': 3, 'username': 'user', 'password':'secret',
+            'lease_token':'a'*48, 'settings': {}}})
+        self.assertFalse(result)
+        self.assertTrue(session.closed)
+        self.assertFalse(api.calls_for('/api/workers/access-checks/5/complete'))
+        self.assertFalse(api.calls_for('/api/workers/credentials/report'))
+        self.assertTrue(api.calls_for('/api/workers/release'))
+
+    def test_cancellation_after_reading_api_key_does_not_buy_captcha(self):
+        cancelled = threading.Event()
+        def key(_):
+            cancelled.set()
+            return 'synthetic-key'
+        with patch('services.captcha.get_runtime_secret', side_effect=key), \
+             patch('services.captcha.requests.post') as submit:
+            with self.assertRaises(OperationCancelled), cancellation_scope(cancelled.is_set, timeout_seconds=30):
+                _solve_2captcha(b'synthetic-image')
+            submit.assert_not_called()
+        # Cancellation is thread-local to the login scope and cannot leak into
+        # the next account or prevent the owning thread's cleanup.
+        check_cancelled()
+
+    def test_login_deadline_is_distinct_from_operator_cancel(self):
+        with self.assertRaises(OperationCancelled) as raised:
+            with cancellation_scope(lambda: False, timeout_seconds=0):
+                self.fail('expired scope cannot begin a login')
+        self.assertTrue(raised.exception.timed_out)
 
 
 class QueueOwnershipTests(unittest.TestCase):

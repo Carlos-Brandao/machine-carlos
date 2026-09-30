@@ -42,6 +42,7 @@ class ProductIntegration(unittest.TestCase):
                 entity = statement.column_descriptions[0].get("entity")
                 return {Dataset:[case.dataset],Municipality:[case.municipality],PortalCredential:[case.credential],Schedule:[case.schedule],ScheduleOccurrence:[case.occurrence],ExportArtifact:[case.artifact]}.get(entity, [])
             def execute(self, statement): return []
+            def add(self, value): pass
             def commit(self): pass
             def rollback(self): pass
             def flush(self): pass
@@ -111,6 +112,32 @@ class ProductIntegration(unittest.TestCase):
         self.user.role="viewer"
         self.assertEqual(403,self.client.get("/admin/exports/7/download").status_code)
         self.assertEqual(403,self.client.post("/admin/consultations/4/exports",data={"format":"csv","csrf":"valid"}).status_code)
+
+    def test_pause_is_idempotent_and_reports_pending_shutdown(self):
+        def drain(session, job, **kwargs):
+            job.status = "pausing"
+        with patch("machine_admin.web.request_job_drain", side_effect=drain) as request_drain, patch("machine_admin.web.audit"):
+            first = self.client.post("/admin/consultations/4/pause", data={"csrf":"valid"}, follow_redirects=False)
+            self.assertEqual(303, first.status_code, first.text)
+            self.assertEqual("pausing", self.job.status)
+            second = self.client.post("/admin/consultations/4/pause", data={"csrf":"valid"}, follow_redirects=False)
+            self.assertEqual(303, second.status_code)
+            self.assertEqual(1, request_drain.call_count)
+            self.job.status = "paused"
+            third = self.client.post("/admin/consultations/4/pause", data={"csrf":"valid"}, follow_redirects=False)
+            self.assertEqual(303, third.status_code)
+            self.assertEqual("paused", self.job.status)
+            self.assertEqual(1, request_drain.call_count)
+
+    def test_waiting_consultation_can_be_paused_without_starting_worker(self):
+        def drain(session, job, **kwargs):
+            job.status = "paused"
+        with patch("machine_admin.web.request_job_drain", side_effect=drain), patch("machine_admin.web.audit"):
+            for status in ("blocked", "awaiting_dataset", "queued"):
+                self.job.status = status
+                response = self.client.post("/admin/consultations/4/pause", data={"csrf":"valid"}, follow_redirects=False)
+                self.assertEqual(303, response.status_code)
+                self.assertEqual("paused", self.job.status)
 
 
 if __name__=="__main__": unittest.main()

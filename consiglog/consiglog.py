@@ -22,6 +22,7 @@ from playwright.sync_api import Page, TimeoutError, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from machine_admin.secret_store import get_runtime_secret
+from services.cancellation import check_cancelled
 from services.utils import aguardar_enter, mask_cpf
 
 
@@ -225,8 +226,10 @@ def _login(
     senha: str,
     portal_profile: str | None = None,
 ) -> None:
+    check_cancelled()
     if not get_runtime_secret("CONSIGX_HTTPS_PROXY"):
         try:
+            check_cancelled()
             session = requests.Session()
             session.trust_env = False
             response = session.get(login_url, timeout=(5, 15))
@@ -238,6 +241,7 @@ def _login(
                 "Solicite a liberação do IP de saída da VPS no portal."
             ) from exc
     for attempt in range(1, 4):
+        check_cancelled()
         try:
             page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
             break
@@ -250,6 +254,7 @@ def _login(
                 )
             page.wait_for_timeout(2_000)
     for _ in range(5):
+        check_cancelled()
         current_url = page.url.lower()
         _dismiss_modal(page)
         if _visible(page, "#txtSenha"):
