@@ -16,8 +16,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import DataError, IntegrityError
@@ -28,11 +28,9 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from machine_admin.config import Settings
 from machine_admin.datasets import create_job_for_dataset, delete_dataset_blob, import_dataset
 from machine_admin.db import get_db, get_session_factory, get_settings
-from machine_admin.exports import (
-    build_job_export as build_job_export_file,
-    job_export_filename,
-)
 from machine_admin.models import (
+    AccessCheck,
+    OperationalBlock,
     AdminUser,
     ApiToken,
     AuditLog,
@@ -51,20 +49,19 @@ from machine_admin.models import (
     PortalCredential,
     WorkerHeartbeat,
 )
-from machine_admin.notifications import enqueue_job_result
 from machine_admin.queue import (
     RETRYABLE_OUTCOMES,
+    apply_credential_report,
+    request_job_drain,
     acquire_credential,
     claim_job_items,
     complete_job_item,
-    expire_exhausted_job_items,
     heartbeat_credential,
     requeue_job_item,
     release_credential,
 )
 from machine_admin.schemas import (
     AcquireCredentialRequest,
-    BatchRequest,
     ClaimItemsRequest,
     CompleteItemRequest,
     CredentialReportRequest,
@@ -242,8 +239,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ValueError("Fuso horário IANA inválido.") from exc
         return cleaned
 
+    bearer_scheme = HTTPBearer(auto_error=False)
+
     def api_principal(
-        request: Request, session: Session = Depends(get_db)
+        request: Request, session: Session = Depends(get_db),
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     ) -> ApiPrincipal:
         header = request.headers.get("Authorization", "")
         scheme, _, raw_token = header.partition(" ")
@@ -306,7 +306,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "TWOCAPTCHA_API_KEY": frozenset({"workers:execute"}),
             "CONSIGX_HTTPS_PROXY": frozenset({"workers:execute"}),
             "SAFECONSIG_PROXY": frozenset({"workers:execute"}),
-            "TELEGRAM_BOT_TOKEN": frozenset({"jobs:write"}),
         }
         required = allowed_scopes.get(normalized)
         if not required or (
@@ -349,6 +348,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             labels = {
                 "awaiting_dataset": "O job ainda não possui uma base.",
                 "paused": "O job está pausado.",
+                "pausing": "Pausando: aguardando encerrar as sessões abertas.",
+                "cancelling": "Interrompendo: aguardando encerrar as sessões abertas.",
                 "completed": "O job foi concluído.",
                 "completed_with_errors": "O job terminou com erros.",
                 "blocked": "O job está bloqueado.",
@@ -379,7 +380,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             select(JobItem.id)
             .where(
                 JobItem.job_id == job.id,
-                JobItem.attempts < JobItem.max_attempts,
+                JobItem.retry_count < JobItem.max_attempts,
                 or_(
                     (
                         (JobItem.status == "pending")
@@ -413,6 +414,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         work_available = ready_item is not None
         issues = [issue.as_dict() for issue in readiness.issues]
+        scopes = [("portal", municipality.slug)]
+        if municipality.platform_slug in {"rf1", "facil", "safeconsig"}:
+            scopes.append(("integration", "captcha"))
+        for scope_type, scope_key in scopes:
+            block = session.get(OperationalBlock, (scope_type, scope_key))
+            if block and block.blocked_until > now:
+                issues.append({"code": f"{scope_type}_blocked", "message": block.message or "Serviço temporariamente bloqueado.",
+                    "action": "Confira a integração ou aguarde a próxima tentativa.", "severity": "blocking"})
+        if job.selected_credential_ids is not None:
+            chosen = session.scalar(select(PortalCredential.id).where(
+                PortalCredential.id.in_(job.selected_credential_ids),
+                PortalCredential.status.in_(["active", "cooldown"]),
+                or_(PortalCredential.cooldown_until.is_(None), PortalCredential.cooldown_until <= now)).limit(1))
+            if not chosen:
+                issues.append({"code": "selected_access_unavailable", "message": "Nenhum dos acessos escolhidos está disponível.",
+                    "action": "Corrija ou teste os acessos selecionados.", "severity": "blocking"})
+        previous = session.scalar(select(Job.id).where(
+            Job.municipality_slug == job.municipality_slug, Job.id != job.id,
+            or_(Job.status.in_(["running", "pausing", "cancelling"]),
+                (Job.status == "queued") & (Job.created_at < job.created_at))).order_by(Job.id).limit(1))
+        if previous:
+            issues.append({"code": "queue_order", "message": f"Aguardando a consulta #{previous} deste convênio.",
+                "action": "Conclua ou pause a anterior para liberar a fila.", "severity": "blocking"})
         if not schedule.allowed:
             issues.append(
                 {
@@ -463,6 +487,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and schedule.allowed
             and not_before_allowed
             and work_available
+            and not any(issue.get("severity") == "blocking" for issue in issues)
         )
         return {
             "executable": executable,
@@ -1184,6 +1209,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 credentials=credentials,
                 municipalities=municipalities,
                 municipality_map={item.slug: item for item in municipalities},
+                last_checks={c.id: session.scalar(select(AccessCheck).where(
+                    AccessCheck.credential_id == c.id).order_by(AccessCheck.id.desc()).limit(1))
+                    for c in credentials},
             ),
         )
 
@@ -1206,6 +1234,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 municipality=session.get(Municipality, credential.municipality_slug),
                 username=username,
                 password=password,
+                checks=list(session.scalars(select(AccessCheck).where(
+                    AccessCheck.credential_id == credential_id).order_by(AccessCheck.id.desc()).limit(10))),
             ),
             headers={"Cache-Control": "no-store, private"},
         )
@@ -1306,15 +1336,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if isinstance(user, RedirectResponse):
             return user
         validate_csrf(request, csrf)
-        credential = session.get(PortalCredential, credential_id)
+        credential = session.scalar(select(PortalCredential).where(
+            PortalCredential.id == credential_id).with_for_update())
         if credential:
-            if credential.status == "active":
+            if session.scalar(select(CredentialLease.credential_id).where(
+                CredentialLease.credential_id == credential_id,
+                CredentialLease.expires_at > datetime.now(UTC))):
+                request.session["flash"] = {"level": "warning", "message": "Acesso em uso. Pause a consulta e aguarde encerrar."}
+                return RedirectResponse("/admin/credentials", status_code=303)
+            if credential.status != "disabled":
                 credential.status = "disabled"
+            elif not credential.login_identity:
+                request.session["flash"] = {"level": "error", "message": "Acesso duplicado. Edite para informar um usuário único."}
+                return RedirectResponse("/admin/credentials", status_code=303)
             else:
-                credential.status = "active"
-                credential.failure_count = 0
-                credential.cooldown_until = None
-                credential.last_error = None
+                credential.status = "invalid" if credential.login_failure_count >= 3 else "active"
             audit(
                 session,
                 actor_id=user.id,
@@ -1505,52 +1541,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "level": "error",
             }
             return RedirectResponse("/admin/datasets", status_code=303)
-        municipality = session.scalar(
-            select(Municipality)
-            .where(Municipality.slug == dataset.municipality_slug)
-            .with_for_update()
-        )
-        if not municipality:
-            request.session["flash"] = {
-                "message": "O convênio desta base não existe mais.",
-                "level": "error",
-            }
-            return RedirectResponse("/admin/datasets", status_code=303)
-        readiness = assess_municipality(session, municipality)
-        if not readiness.can_start:
-            request.session["flash"] = {
-                "message": f"Job não iniciado: {readiness.summary}",
-                "level": "warning",
-            }
-            return RedirectResponse("/admin/datasets", status_code=303)
-        active_job = session.scalar(
-            select(Job.id).where(
-                Job.municipality_slug == municipality.slug,
-                Job.status.in_(["queued", "running", "paused", "blocked"]),
-            )
-        )
-        if active_job:
-            request.session["flash"] = {
-                "message": f"O convênio já possui o job #{active_job} ativo.",
-                "level": "warning",
-            }
-            return RedirectResponse("/admin/jobs", status_code=303)
-        job = create_job_for_dataset(session, dataset=dataset, requested_by_id=user.id)
-        audit(
-            session,
-            actor_id=user.id,
-            action="job.created_from_dataset",
-            target_type="automation_job",
-            target_id=str(job.id),
-            ip_address=client_ip(request),
-            details={"dataset_id": dataset.id, "municipality": dataset.municipality_slug},
-        )
-        session.commit()
-        request.session["flash"] = {
-            "message": f"Job #{job.id} criado a partir da base #{dataset.id}.",
-            "level": "success",
-        }
-        return RedirectResponse("/admin/jobs", status_code=303)
+        # Compatibilidade de URL: a seleção explícita de contas agora ocorre
+        # na tela única de nova consulta, antes de enfileirar qualquer trabalho.
+        return RedirectResponse(f"/admin/consultations/new?dataset_id={dataset_id}", status_code=303)
 
     @app.get("/admin/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, session: Session = Depends(get_db)):
@@ -1616,7 +1609,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return user
         notifications = list(
             session.scalars(
-                select(NotificationOutbox)
+                select(NotificationOutbox).where(NotificationOutbox.channel == "webhook")
                 .order_by(NotificationOutbox.created_at.desc())
                 .limit(300)
             )
@@ -1662,7 +1655,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             .where(NotificationOutbox.id == notification_id)
             .with_for_update()
         )
-        if not notification:
+        if not notification or notification.channel != "webhook":
             raise HTTPException(status_code=404, detail="Envio não encontrado.")
         try:
             if notification.status == "processing":
@@ -1706,162 +1699,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse("/admin/notifications", status_code=303)
 
     def control_job(session: Session, job: Job, action: str) -> str:
-        if action == "pause":
-            if job.status not in {"queued", "running"}:
-                raise ValueError("Apenas jobs em fila ou execução podem ser pausados.")
-            session.execute(
-                update(JobItem)
-                .where(JobItem.job_id == job.id, JobItem.status == "leased")
-                .values(
-                    status="pending",
-                    credential_id=None,
-                    lease_owner=None,
-                    lease_expires_at=None,
-                    next_attempt_at=None,
-                    # Pausa administrativa não é falha do portal e não pode
-                    # consumir o orçamento de retentativas daquele registro.
-                    max_attempts=JobItem.max_attempts + 1,
-                )
-            )
-            session.execute(
-                update(JobItemAttempt)
-                .where(
-                    JobItemAttempt.job_item_id.in_(
-                        select(JobItem.id).where(JobItem.job_id == job.id)
-                    ),
-                    JobItemAttempt.status == "started",
-                )
-                .values(
-                    status="abandoned",
-                    error_category="operator_pause",
-                    error_message="Tentativa interrompida pela pausa do job.",
-                    finished_at=datetime.now(UTC),
-                )
-            )
-            session.execute(delete(CredentialLease).where(CredentialLease.job_id == job.id))
-            job.status = "paused"
-            message = "Job pausado pelo operador."
-        elif action == "cancel":
-            if job.status in {"completed", "cancelled"}:
-                raise ValueError("Este job não pode mais ser interrompido.")
-            session.execute(
-                update(JobItemAttempt)
-                .where(
-                    JobItemAttempt.job_item_id.in_(
-                        select(JobItem.id).where(JobItem.job_id == job.id)
-                    ),
-                    JobItemAttempt.status == "started",
-                )
-                .values(
-                    status="abandoned",
-                    error_category="operator_cancel",
-                    error_message="Tentativa interrompida pelo cancelamento do job.",
-                    finished_at=datetime.now(UTC),
-                )
-            )
-            session.execute(
-                update(JobItem)
-                .where(JobItem.job_id == job.id, JobItem.status.in_(["pending", "leased"]))
-                .values(
-                    status="cancelled",
-                    credential_id=None,
-                    lease_owner=None,
-                    lease_expires_at=None,
-                    next_attempt_at=None,
-                    finished_at=datetime.now(UTC),
-                )
-            )
-            session.execute(delete(CredentialLease).where(CredentialLease.job_id == job.id))
-            job.status = "cancelled"
-            job.cancelled_at = datetime.now(UTC)
-            job.finished_at = job.cancelled_at
-            message = "Job interrompido totalmente pelo operador."
+        # A sessão só perde sua reserva quando o navegador encerra ou o lease
+        # expira. Cliques concorrentes são serializados pela linha da execução.
+        job = session.scalar(select(Job).where(Job.id == job.id).with_for_update())
+        if action in {"pause", "cancel"}:
+            if action == "pause" and job.status not in {"queued", "running"}:
+                raise ValueError("Apenas consultas em fila ou execução podem ser pausadas.")
+            if action == "cancel" and job.status in {"completed", "cancelled", "cancelling"}:
+                raise ValueError("Esta consulta não pode mais ser interrompida.")
+            request_job_drain(session, job, cancel=action == "cancel")
+            message = ("Pausa solicitada. As sessões estão sendo encerradas."
+                       if action == "pause" else "Interrupção solicitada. Os resultados já obtidos serão preservados.")
         elif action == "resume":
             if job.status not in {"paused", "blocked"}:
-                raise ValueError("Somente jobs pausados ou bloqueados podem ser retomados.")
+                raise ValueError("Somente consultas pausadas ou bloqueadas podem ser retomadas.")
             job.status = "queued"
-            job.cancelled_at = None
-            job.finished_at = None
-            message = "Job retomado pelo operador."
+            job.cancelled_at = job.finished_at = job.not_before = None
+            message = "Consulta retomada. Aguardando acessos disponíveis e a janela do portal."
         elif action == "retry":
             if job.status not in {"failed", "completed_with_errors", "cancelled"}:
-                raise ValueError(
-                    "Tente novamente apenas jobs cancelados ou concluídos com falhas."
-                )
-            # Trava toda a outbox antes de alterar a geração. O claim usa
-            # SKIP LOCKED e não consegue iniciar um envio antigo entre esta
-            # verificação e o commit.
-            notifications = list(
-                session.scalars(
-                    select(NotificationOutbox)
-                    .where(NotificationOutbox.job_id == job.id)
-                    .with_for_update()
-                )
-            )
-            if any(item.status == "processing" for item in notifications):
-                raise ValueError(
-                    "O resultado ainda está sendo enviado. Aguarde o envio terminar antes de tentar novamente."
-                )
-            session.execute(
-                update(JobItemAttempt)
-                .where(
-                    JobItemAttempt.job_item_id.in_(
-                        select(JobItem.id).where(JobItem.job_id == job.id)
-                    ),
-                    JobItemAttempt.status == "started",
-                )
-                .values(
-                    status="abandoned",
-                    error_category="operator_retry",
-                    error_message="Tentativa anterior substituída por retry manual.",
-                    finished_at=datetime.now(UTC),
-                )
-            )
-            for notification in notifications:
-                if notification.status in {"pending", "retry", "failed"}:
-                    notification.status = "cancelled"
-                    notification.next_attempt_at = None
-                    notification.locked_by = None
-                    notification.locked_until = None
-            retry_item_ids = select(JobItem.id).where(
-                JobItem.job_id == job.id,
-                JobItem.status.in_(["failed", "cancelled", "leased"]),
-            )
-            # Mantém o ciphertext anterior até existir uma nova resposta, mas
-            # marca a geração como obsoleta. Assim um novo erro nunca exporta
-            # campos da tentativa anterior.
-            session.execute(
-                update(ConsultationResult)
-                .where(ConsultationResult.job_item_id.in_(retry_item_ids))
-                .values(superseded_at=datetime.now(UTC))
-            )
-            session.execute(
-                update(JobItem)
-                .where(JobItem.job_id == job.id, JobItem.status.in_(["failed", "cancelled", "leased"]))
-                .values(
-                    status="pending",
-                    outcome=None,
-                    credential_id=None,
-                    lease_owner=None,
-                    lease_expires_at=None,
-                    error_code=None,
-                    error_message=None,
-                    last_error_category=None,
-                    next_attempt_at=None,
-                    finished_at=None,
-                    max_attempts=JobItem.attempts + 3,
-                )
-            )
-            session.execute(delete(CredentialLease).where(CredentialLease.job_id == job.id))
+                raise ValueError("Tente novamente apenas consultas encerradas com falhas ou interrompidas.")
+            if session.scalar(select(CredentialLease.credential_id).where(
+                CredentialLease.job_id == job.id, CredentialLease.expires_at > datetime.now(UTC)).limit(1)):
+                raise ValueError("Aguarde o encerramento da sessão anterior.")
+            retry_ids = select(JobItem.id).where(JobItem.job_id == job.id,
+                JobItem.status.in_(["failed", "cancelled", "leased"]))
+            session.execute(update(ConsultationResult).where(
+                ConsultationResult.job_item_id.in_(retry_ids)).values(superseded_at=datetime.now(UTC)))
+            session.execute(update(JobItemAttempt).where(JobItemAttempt.job_item_id.in_(retry_ids),
+                JobItemAttempt.status == "started").values(status="abandoned",
+                error_category="operator_retry", finished_at=datetime.now(UTC)))
+            session.execute(update(JobItem).where(JobItem.id.in_(retry_ids)).values(
+                status="pending", outcome=None, credential_id=None, lease_owner=None,
+                lease_token=None, lease_expires_at=None, error_code=None, error_message=None,
+                last_error_category=None, next_attempt_at=None, finished_at=None,
+                retry_count=0, max_attempts=3))
+            job.result_version = int(job.result_version or 1) + 1
             job.status = "queued"
-            job.failed_items = 0
-            job.retryable_items = 0
-            job.permanent_items = 0
-            job.cancelled_at = None
-            job.finished_at = None
-            message = "Job reenfileirado para nova tentativa."
+            job.failed_items = job.retryable_items = job.permanent_items = 0
+            job.cancelled_at = job.finished_at = job.not_before = None
+            message = "Nova tentativa criada apenas para os itens pendentes/falhos. Sucessos preservados."
         else:
-            raise ValueError("Ação de job inválida.")
+            raise ValueError("Ação inválida.")
         session.add(JobEvent(job_id=job.id, event_type=f"job.{action}", message=message))
         return message
 
@@ -1889,50 +1768,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.session["flash"] = {"level": "error", "message": str(exc)}
         return RedirectResponse("/admin/jobs", status_code=303)
 
-    def build_job_export(session: Session, job_id: int) -> tuple[bytes, int]:
-        return build_job_export_file(session, settings, job_id)
-
     @app.get("/admin/jobs/{job_id}/export.xlsx")
-    def export_job(
-        job_id: int,
-        request: Request,
-        session: Session = Depends(get_db),
-    ):
+    def legacy_job_export(job_id: int, request: Request, session: Session = Depends(get_db)):
         user = require_browser_user(request, session, write_access=True)
         if isinstance(user, RedirectResponse):
             return user
-        job = session.get(Job, job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job não encontrado.")
-        payload, row_count = build_job_export(session, job_id)
-        municipality = session.get(Municipality, job.municipality_slug)
-        filename = job_export_filename(
-            municipality.name if municipality else job.municipality_slug,
-            exported_at=datetime.now(UTC),
-            timezone_name=(
-                municipality.timezone if municipality else "America/Fortaleza"
-            ),
-        )
-        audit(
-            session,
-            actor_id=user.id,
-            action="job.exported",
-            target_type="automation_job",
-            target_id=str(job_id),
-            ip_address=client_ip(request),
-            details={"rows": row_count},
-        )
-        session.commit()
-        return StreamingResponse(
-            io.BytesIO(payload),
-            media_type=(
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            ),
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Cache-Control": "no-store",
-            },
-        )
+        if not session.get(Job, job_id):
+            raise HTTPException(404, "Consulta não encontrada.")
+        request.session["flash"] = {"level": "info", "message":
+            "Solicite ou baixe a exportação versionada na consulta. Painel e API usam o mesmo arquivo."}
+        return RedirectResponse(f"/admin/consultations/{job_id}", status_code=303)
 
     def job_payload(session: Session, job: Job) -> dict[str, object]:
         municipality = session.get(Municipality, job.municipality_slug)
@@ -1978,139 +1823,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "blocked_reason": None if execution["executable"] else execution["reason"],
         }
 
-    def enqueue_reconciled_job_result(session: Session, job: Job) -> None:
-        if job.status not in {"completed", "completed_with_errors", "failed"}:
-            return
-        notification = enqueue_job_result(session, job)
-        if notification and notification.status == "pending":
-            session.add(
-                JobEvent(
-                    job_id=job.id,
-                    event_type="notification.queued",
-                    message="Resultado final agendado após reconciliação de lease.",
-                    event_data={
-                        "notification_id": notification.id,
-                        "channel": notification.channel,
-                    },
-                )
-            )
-
-    @app.post("/api/jobs/batch")
-    def create_batch(
-        payload: BatchRequest,
-        _: ApiPrincipal = Depends(require_scope("jobs:write")),
-        session: Session = Depends(get_db),
-    ):
-        if not payload.jobs:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Cada job precisa informar uma base existente. Atualize o controlador "
-                    "Telegram e selecione convênio + base."
-                ),
-            )
-        requested = sorted(
-            dict.fromkeys(
-                (item.municipality_slug.strip().lower(), item.dataset_id)
-                for item in payload.jobs
-            )
-        )
-        created: list[dict[str, object]] = []
-        skipped: list[dict[str, object]] = []
-        for slug, dataset_id in requested:
-            municipality = session.scalar(
-                select(Municipality)
-                .where(Municipality.slug == slug)
-                .with_for_update()
-            )
-            dataset = session.get(Dataset, dataset_id)
-            if (
-                not municipality
-                or not dataset
-                or dataset.status != "ready"
-                or dataset.municipality_slug != slug
-            ):
-                skipped.append(
-                    {
-                        "municipality_slug": slug,
-                        "dataset_id": dataset_id,
-                        "reason": "Convênio ou base indisponível.",
-                    }
-                )
-                continue
-            readiness = assess_municipality(session, municipality)
-            if not readiness.can_start:
-                skipped.append(
-                    {
-                        "municipality_slug": slug,
-                        "dataset_id": dataset_id,
-                        "reason": readiness.summary,
-                    }
-                )
-                continue
-            existing = session.scalar(
-                select(Job.id).where(
-                    Job.municipality_slug == slug,
-                    Job.status.in_(["queued", "running", "paused", "blocked"]),
-                )
-            )
-            if existing:
-                skipped.append(
-                    {
-                        "municipality_slug": slug,
-                        "dataset_id": dataset_id,
-                        "reason": f"O job #{existing} já está ativo.",
-                    }
-                )
-                continue
-            job = create_job_for_dataset(
-                session,
-                dataset=dataset,
-                requested_by_id=None,
-            )
-            job.telegram_user_id = payload.requested_by.telegram_user_id
-            job.telegram_chat_id = payload.requested_by.telegram_chat_id
-            created.append(job_payload(session, job))
-        session.commit()
-        return {"created": created, "skipped": skipped, "message": f"{len(created)} job(s) criado(s)."}
+    @app.post("/api/jobs/batch", status_code=410)
+    def retired_batch(_: ApiPrincipal = Depends(require_scope("jobs:write"))):
+        raise HTTPException(410, "Controlador legado removido. Use POST /api/v1/jobs com base e acessos explícitos.")
 
     @app.get("/api/jobs/status")
     def api_job_status(
         _: ApiPrincipal = Depends(require_scope("jobs:read")),
         session: Session = Depends(get_db),
     ):
-        reconcile_job_ids = list(
-            session.scalars(
-                select(JobItem.job_id)
-                .join(Job, Job.id == JobItem.job_id)
-                .where(
-                    Job.status.in_(["queued", "running"]),
-                    JobItem.attempts >= JobItem.max_attempts,
-                    or_(
-                        JobItem.status == "pending",
-                        (
-                            (JobItem.status == "leased")
-                            & (JobItem.lease_expires_at <= datetime.now(UTC))
-                        ),
-                    ),
-                )
-                .distinct()
-                .order_by(JobItem.job_id)
-                .limit(50)
-            )
-        )
-        for reconcile_job_id in reconcile_job_ids:
-            changed = expire_exhausted_job_items(
-                session, job_id=reconcile_job_id
-            )
-            if changed:
-                reconciled_job = session.get(Job, reconcile_job_id)
-                if reconciled_job:
-                    enqueue_reconciled_job_result(session, reconciled_job)
-            # Libera cada Job em ordem determinística; não retenha dezenas de
-            # locks até o fim do polling de todos os workers.
-            session.commit()
-
         def fetch(
             statuses: list[str], limit: int = 100, *, newest_first: bool = False
         ) -> list[dict[str, object]]:
@@ -2199,7 +1920,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     min(max(item.max_workers, 0), usable_credentials),
                 )
             )
-        desired = min(sum(allocation for _, _, allocation in allocations), 20)
+        # Invalid logins still need an executor when the operator explicitly
+        # requests a login test. Otherwise a zero-capacity pool can never recover.
+        pending_checks = session.scalar(select(func.count()).select_from(AccessCheck)
+            .join(PortalCredential, PortalCredential.id == AccessCheck.credential_id)
+            .join(Municipality, Municipality.slug == PortalCredential.municipality_slug)
+            .where(Municipality.platform_slug == normalized,
+                   AccessCheck.status.in_(["queued", "running"]))) or 0
+        desired = min(max(sum(allocation for _, _, allocation in allocations),
+                          1 if pending_checks else 0), 20)
         return {
             "platform": normalized,
             "desired_workers": desired,
@@ -2350,12 +2079,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _: ApiPrincipal = Depends(require_scope("workers:execute")),
         session: Session = Depends(get_db),
     ):
-        reconciled = expire_exhausted_job_items(session, job_id=payload.job_id)
-        if reconciled:
-            reconciled_job = session.get(Job, payload.job_id)
-            if reconciled_job:
-                enqueue_reconciled_job_result(session, reconciled_job)
-            session.commit()
         job = session.scalar(
             select(Job).where(Job.id == payload.job_id).with_for_update()
         )
@@ -2379,7 +2102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             .select_from(JobItem)
             .where(
                 JobItem.job_id == payload.job_id,
-                JobItem.attempts < JobItem.max_attempts,
+                JobItem.retry_count < JobItem.max_attempts,
                 or_(
                     (
                         (JobItem.status == "pending")
@@ -2403,7 +2126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 CredentialLease.expires_at > now,
             )
         ) or 0
-        if ready_items <= job_leases:
+        if ready_items == 0:
             raise HTTPException(
                 status_code=409,
                 detail="Todos os itens prontos já têm um worker reservado.",
@@ -2420,8 +2143,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 CredentialLease.expires_at > now,
             )
         ) or 0
-        if active_workers >= municipality.max_workers:
-            raise HTTPException(status_code=409, detail="Limite de workers atingido.")
+        if active_workers >= municipality.max_workers or job_leases >= job.max_parallel_accounts:
+            raise HTTPException(status_code=409, detail="Limite de acessos simultâneos atingido.")
         credential = acquire_credential(
             session,
             job_id=payload.job_id,
@@ -2436,6 +2159,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(
             {
                 "credential_id": credential.id,
+                "lease_token": session.get(CredentialLease, credential.id).lease_token,
                 "username": username,
                 "password": password,
                 "login_url": municipality.login_url if municipality else None,
@@ -2468,6 +2192,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 CredentialLease.worker_id == payload.worker_id,
                 CredentialLease.credential_id == payload.credential_id,
                 CredentialLease.job_id == payload.job_id,
+                CredentialLease.lease_token == payload.credential_lease_token,
                 CredentialLease.expires_at > datetime.now(UTC),
             )
         )
@@ -2479,6 +2204,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 job_id=payload.job_id,
                 credential_id=payload.credential_id,
                 worker_id=payload.worker_id,
+                credential_lease_token=payload.credential_lease_token,
                 batch_size=payload.batch_size,
                 lease_seconds=payload.lease_seconds,
             )
@@ -2494,6 +2220,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response_items.append(
                 {
                     "item_id": item.id,
+                    "lease_token": item.lease_token,
                     "cpf": cipher.decrypt(
                         record.cpf_ciphertext,
                         context=f"record:{record.encryption_context}:cpf",
@@ -2514,12 +2241,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session: Session = Depends(get_db),
     ):
         ok = heartbeat_credential(
-            session, worker_id=payload.worker_id, lease_seconds=payload.lease_seconds
+            session, worker_id=payload.worker_id, lease_seconds=payload.lease_seconds,
+            credential_lease_token=payload.credential_lease_token,
         )
         session.commit()
         if not ok:
-            raise HTTPException(status_code=404, detail="Lease não encontrado.")
-        return {"ok": True}
+            raise HTTPException(status_code=409, detail="Reserva expirada ou substituída.")
+        lease = session.scalar(select(CredentialLease).where(
+            CredentialLease.worker_id == payload.worker_id,
+            CredentialLease.lease_token == payload.credential_lease_token))
+        job = session.get(Job, lease.job_id) if lease and lease.job_id else None
+        return {"ok": True, "drain_requested": bool(job and job.status not in {"queued", "running"})}
 
     @app.post("/api/workers/credentials/report")
     def worker_report_credential(
@@ -2527,49 +2259,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _: ApiPrincipal = Depends(require_scope("workers:execute")),
         session: Session = Depends(get_db),
     ):
-        lease = session.scalar(
-            select(CredentialLease).where(
-                CredentialLease.worker_id == payload.worker_id,
-                CredentialLease.credential_id == payload.credential_id,
-            )
-        )
-        credential = session.get(PortalCredential, payload.credential_id)
+        # Use the same order as claim/release: job, credential, lease. Inserting
+        # a JobEvent also needs the parent job row, so locking lease first can
+        # deadlock against a concurrent acquisition holding the job lock.
+        assignment = session.scalar(select(CredentialLease).where(
+            CredentialLease.worker_id == payload.worker_id,
+            CredentialLease.credential_id == payload.credential_id,
+            CredentialLease.lease_token == payload.credential_lease_token,
+            CredentialLease.expires_at > datetime.now(UTC)))
+        if assignment and assignment.job_id:
+            session.scalar(select(Job).where(Job.id == assignment.job_id).with_for_update())
+        credential = session.scalar(select(PortalCredential).where(
+            PortalCredential.id == payload.credential_id).with_for_update())
+        lease = session.scalar(select(CredentialLease).where(
+            CredentialLease.worker_id == payload.worker_id,
+            CredentialLease.credential_id == payload.credential_id,
+            CredentialLease.lease_token == payload.credential_lease_token,
+            CredentialLease.expires_at > datetime.now(UTC)).with_for_update())
         if not lease or not credential:
-            raise HTTPException(status_code=409, detail="Lease de credencial inválido.")
-        now = datetime.now(UTC)
-        if payload.outcome == "success":
-            credential.status = "active"
-            credential.failure_count = 0
-            credential.cooldown_until = None
-            credential.last_error = None
-            credential.last_validated_at = now
-        else:
-            is_portal_unavailable = payload.outcome == "portal_unavailable"
-            session.add(
-                JobEvent(
-                    job_id=lease.job_id,
-                    event_type="portal.indisponivel" if is_portal_unavailable else "credencial.erro",
-                    message=(payload.error_message or "Falha reportada pelo worker.")[:500],
-                    event_data={
-                        "credential_id": credential.id,
-                        "outcome": payload.outcome,
-                    },
-                )
-            )
-            if not is_portal_unavailable:
-                credential.failure_count += 1
-            credential.last_error = payload.error_message or "Falha reportada pelo worker."
-            if payload.outcome == "invalid_credentials":
-                credential.status = "invalid"
-                credential.cooldown_until = None
-            else:
-                from datetime import timedelta
-
-                credential.status = "cooldown"
-                credential.cooldown_until = now + timedelta(
-                    seconds=payload.cooldown_seconds
-                )
-            release_credential(session, worker_id=payload.worker_id)
+            raise HTTPException(status_code=409, detail="Reserva de acesso inválida ou expirada.")
+        apply_credential_report(session, credential, outcome=payload.outcome,
+            stage=payload.stage, error_code=payload.error_code,
+            error_message=payload.error_message, cooldown_seconds=payload.cooldown_seconds)
+        if lease.job_id and payload.outcome != "success":
+            session.add(JobEvent(job_id=lease.job_id, event_type=f"access.{payload.outcome}",
+                message=(payload.error_message or "Falha de acesso.")[:500],
+                event_data={"credential_id": credential.id, "stage": payload.stage,
+                            "error_code": payload.error_code}))
+        # Não liberar aqui: o worker ainda precisa encerrar o navegador.
         session.commit()
         return {"ok": True, "credential_status": credential.status}
 
@@ -2579,7 +2296,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _: ApiPrincipal = Depends(require_scope("workers:execute")),
         session: Session = Depends(get_db),
     ):
-        release_credential(session, worker_id=payload.worker_id)
+        release_credential(session, worker_id=payload.worker_id,
+            credential_lease_token=payload.credential_lease_token)
         session.commit()
         return {"ok": True}
 
@@ -2606,6 +2324,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 worker_id=payload.worker_id,
                 item_id=payload.item_id,
                 status=payload.status,
+                lease_token=payload.lease_token,
                 result_ciphertext=result_ciphertext,
                 outcome=outcome,
                 error_code=payload.error_code,
@@ -2615,18 +2334,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details=payload.details,
             )
             job = session.get(Job, item.job_id)
-            notification = None
-            if job and job.status in {"completed", "completed_with_errors", "failed"}:
-                notification = enqueue_job_result(session, job)
-            if notification and notification.status == "pending":
-                session.add(
-                    JobEvent(
-                        job_id=job.id,
-                        event_type="notification.queued",
-                        message="Resultado final agendado para envio.",
-                        event_data={"notification_id": notification.id, "channel": "telegram"},
-                    )
-                )
             session.commit()
         except ValueError as exc:
             session.rollback()
@@ -2654,31 +2361,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 worker_id=payload.worker_id,
                 item_id=payload.item_id,
                 reason=payload.reason,
+                lease_token=payload.lease_token,
+                consume_attempt=payload.consume_attempt,
                 outcome=payload.outcome,
                 error_code=payload.error_code,
                 stage=payload.stage,
                 retry_after_seconds=payload.retry_after_seconds,
             )
             job = session.get(Job, item.job_id)
-            notification = None
-            if job and job.status in {"completed", "completed_with_errors", "failed"}:
-                notification = enqueue_job_result(session, job)
-            if notification and notification.status == "pending":
-                session.add(
-                    JobEvent(
-                        job_id=job.id,
-                        event_type="notification.queued",
-                        message="Resultado final agendado para envio.",
-                        event_data={
-                            "notification_id": notification.id,
-                            "channel": "telegram",
-                        },
-                    )
-                )
             session.commit()
         except ValueError as exc:
             session.rollback()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True, "item_id": item.id, "status": item.status}
 
+    from machine_admin.product_api import install_product_routes
+    from machine_admin.product_admin import install_product_admin
+    from machine_admin.access_checks import install_access_checks
+    install_product_routes(app, settings, require_scope, control_job)
+    install_product_admin(app, settings, require_browser_user, page_context,
+                          validate_csrf, control_job, job_execution_state)
+    install_access_checks(app, settings, require_scope, require_browser_user, validate_csrf)
     return app

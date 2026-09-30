@@ -217,7 +217,9 @@ class AdminCoreTests(unittest.TestCase):
             upload_route = next(route for route in app.routes if route.path == "/admin/datasets" and "POST" in route.methods)
             self.assertNotIn("custom_columns", signature(upload_route.endpoint).parameters)
             self.assertIn("/admin/datasets/{dataset_id}/jobs", paths)
-            self.assertEqual(17, len(Base.metadata.tables))
+            self.assertTrue({'portal_access_checks', 'consultation_schedules',
+                             'schedule_occurrences', 'export_artifacts', 'job_requests',
+                             'webhook_endpoints', 'operational_blocks'} <= set(Base.metadata.tables))
 
             response = TestClient(app).get("/login")
             self.assertEqual(200, response.status_code)

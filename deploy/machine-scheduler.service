@@ -1,16 +1,23 @@
 [Unit]
-Description=Machine worker pools
+Description=Machine schedules, maintenance, exports and webhook delivery
 After=network-online.target machine-backend.service
 Requires=machine-backend.service
 Wants=machine-rf1-worker.service machine-facil-worker.service machine-safeconsig-worker.service machine-consiglog-worker.service
 After=machine-rf1-worker.service machine-facil-worker.service machine-safeconsig-worker.service machine-consiglog-worker.service
 
 [Service]
-Type=oneshot
-User=machine-worker
-Group=machine-worker
-ExecStart=/bin/true
-RemainAfterExit=yes
+Type=simple
+User=machine-backend
+Group=machine-backend
+SupplementaryGroups=machine-runtime
+WorkingDirectory=/opt/machine/current
+EnvironmentFile=/opt/machine/shared/env/scheduler.env
+Environment=MACHINE_STORAGE_DIR=/opt/machine/shared/storage
+ExecStart=/opt/machine/current/.venv/bin/python run_operational_scheduler.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=150
+ReadWritePaths=/opt/machine/shared/storage
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

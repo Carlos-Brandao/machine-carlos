@@ -1,7 +1,7 @@
 # Contrato de adapters
 
 Um adapter conhece somente o portal. Agenda, fila, concorrência, leases,
-tentativas, notificações e Telegram pertencem ao backend e ao GenericWorker.
+tentativas e entregas pertencem ao backend e ao GenericWorker.
 
 ## Interface
 
@@ -46,7 +46,7 @@ Um adapter não pode:
 - buscar ou alterar jobs no banco;
 - decidir dia ou horário;
 - manter contador próprio de retry;
-- enviar Telegram;
+- enviar notificações externas;
 - ler arquivo Excel;
 - escolher outro convênio;
 - engolir exceção de captcha ou rede e retornar not_found;

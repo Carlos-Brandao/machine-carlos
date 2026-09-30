@@ -73,8 +73,8 @@ padrão.
 
 Fluxo normal: queued → running → completed, completed_with_errors ou failed.
 
-- paused devolve leases em andamento para a fila.
-- cancelled encerra totalmente os itens ainda pendentes.
+- pausing impede novas reservas e espera a consulta em andamento/logout; somente depois vira paused.
+- cancelling aguarda fechamento das sessões antes de cancelar os itens restantes.
 - blocked exige correção operacional antes de retomar.
 - **Pausar** preserva o progresso e permite retomar.
 - **Interromper** cancela definitivamente o restante daquela execução.
@@ -82,13 +82,13 @@ Fluxo normal: queued → running → completed, completed_with_errors ou failed.
 - **Tentar novamente** reabre somente itens falhos ou cancelados e concede três
   novas tentativas; itens concluídos não são repetidos.
 
-Somente um job ativo por convênio é criado pelo painel ou Telegram.
+Podem existir várias consultas na fila. Apenas uma roda por convênio; pausadas não bloqueiam novas consultas. A seleção de contas é congelada ao criar a consulta.
 
 ## Concorrência, leases e workers
 
 A capacidade efetiva é limitada pelo menor conjunto disponível entre:
 
-- Municipality.max_workers;
+- limite de acessos solicitado na consulta e teto explícito do convênio;
 - número de acessos utilizáveis;
 - workers online;
 - itens prontos.
@@ -96,7 +96,7 @@ A capacidade efetiva é limitada pelo menor conjunto disponível entre:
 O backend reserva acessos e itens com transações PostgreSQL e
 FOR UPDATE SKIP LOCKED. Um acesso não pode ser usado por duas sessões ao mesmo
 tempo. O worker renova o lease do acesso e dos itens; leases expirados podem ser
-recuperados.
+recuperados. Cada reserva tem um token de geração: resposta atrasada não sobrescreve a geração atual. Heartbeat independe do tempo gasto no navegador/captcha. Repetir a confirmação da mesma geração não duplica resultados.
 
 O GenericWorker consulta somente jobs marcados pelo backend com
 executable=true. Não existe uma segunda regra de horário ou retry no executor.
@@ -115,7 +115,7 @@ Timeout, seletor ausente, HTML inesperado ou bug não podem virar not_found. Na
 dúvida, o adapter devolve falha retentável.
 
 O backend persiste cada tentativa, aplica backoff exponencial e encerra no
-limite do item (três por padrão). Enquanto todos os itens aguardam o próximo
+limite do item (três erros técnicos por padrão). Login, portal fora e integração fora não consomem esse orçamento. Três logins não confirmados bloqueiam somente aquele acesso até correção/teste; as contas saudáveis continuam. Enquanto todos os itens aguardam o próximo
 retry, nenhum worker abre login, navegador ou captcha.
 
 Jobs anteriores à migração do contrato canônico não permitem reconstruir com
@@ -132,17 +132,18 @@ usam RETORNO_. Assim um retorno nunca substitui silenciosamente o CPF ou outra
 coluna de entrada. Se a própria base já tiver um desses nomes reservados, a
 coluna produzida pelo sistema recebe o prefixo SAIDA_ e a original é preservada.
 
-## Telegram e entregas
+## Agendas e entregas
 
-- Há um único TELEGRAM_BOT_TOKEN.
-- O Telegram só cria jobs com base existente e explicitamente selecionada.
-- O arquivo final é enviado exclusivamente ao telegram_chat_id do pedido.
-- Concluir o job somente grava uma mensagem na outbox.
-- Um processo separado tenta entregar até cinco vezes com backoff.
-- Falhas e reprocessamento manual ficam na tela **Envios**.
-- O agendamento da outbox é idempotente, mas o Telegram oferece entrega
-  **at-least-once**: uma queda depois de o Telegram aceitar o arquivo e antes do
-  commit pode gerar repetição. A legenda inclui o ID do envio para identificá-la.
+- Não há integração Telegram ativa.
+- Agenda: base fixa, seleção de acessos, limite, cron e fuso explícitos.
+- Ocorrências são únicas por agenda+horário; sobreposição da mesma agenda é ignorada.
+- Horários perdidos fora da tolerância são registrados e não reexecutados em massa.
+- API de criação aceita chave de idempotência. Mesma chave e payload reaproveitam a consulta.
+- Resultados por API usam cursor. Exportação por API é assíncrona e congela o snapshot solicitado.
+- Nova tentativa incrementa a versão do resultado e preserva exportações anteriores.
+- Webhooks assinados transmitem apenas identificação e estado; o consumidor busca os dados com token.
+- Entrega de webhook é at-least-once: o receptor deve deduplicar pelo ID do evento.
+- Uma queda depois da consulta ao portal pode obrigar nova consulta; somente a persistência é idempotente.
 
 ## Segurança e auditoria
 
@@ -163,9 +164,9 @@ coluna produzida pelo sistema recebe o prefixo SAIDA_ e a original é preservada
 | RF1 | rf1.v1 | transacional |
 | FACILCONSIG | facil.v1 | transacional |
 | CONSIGX | consiglog.v1 | transacional/em homologação por convênio |
-| SAFE | legado | indisponível para novos jobs |
+| SAFE | safeconsig.v1 | transacional; prontidão por convênio |
 | Grid | legado | indisponível para novos jobs |
 | EasyConsig | ausente | indisponível |
 
-SAFE e Grid só podem ser liberados após cumprir
+Convênios novos e Grid só podem ser liberados após cumprir
 [ADAPTER_CONTRACT.md](ADAPTER_CONTRACT.md).

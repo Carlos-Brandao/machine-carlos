@@ -1,0 +1,14 @@
+<div class="selection-flow" data-account-selector>
+  <noscript><p class="inline-warning">Ative o JavaScript para selecionar os acessos desta base.</p></noscript>
+  <label>Base para consultar<select name="dataset_id" required data-dataset-select><option value="">Escolha uma base</option>{% for item in datasets %}<option value="{{ item.id }}" data-municipality="{{ item.municipality_slug }}" data-count="{{ item.row_count }}" data-limit="{{ municipality_map[item.municipality_slug].max_workers if item.municipality_slug in municipality_map else 1 }}" {{ 'selected' if selected_dataset_id|default(none) == item.id else '' }}>{{ municipality_map[item.municipality_slug].name if item.municipality_slug in municipality_map else item.municipality_slug }} · {{ item.display_name or item.original_filename }} · {{ item.row_count }} registros</option>{% endfor %}</select></label>
+  <fieldset class="account-fieldset"><legend>Acessos que podem consultar esta base</legend><p class="muted">Selecione usuários diferentes. Cada acesso executa uma consulta por vez; os acessos selecionados compartilham a fila.</p>
+    {% for item in credentials %}
+    {% set usable = item.status == 'active' or (item.status == 'cooldown' and (not item.cooldown_until or item.cooldown_until <= now_utc)) %}
+    <label class="account-option" data-account-option data-municipality="{{ item.municipality_slug }}" hidden><input type="checkbox" name="credential_ids" value="{{ item.id }}" data-usable="{{ 'true' if usable else 'false' }}" disabled><span><strong>{{ item.label }}</strong><small>{{ item.municipality_slug }} · {{ {'active':'Disponível','cooldown':'Em espera','invalid':'Corrija usuário/senha','disabled':'Desativado'}.get(item.status, item.status) }}{% if item.last_error %} — {{ item.last_error }}{% endif %}</small></span></label>
+    {% endfor %}
+    <p class="muted" data-no-accounts>Escolha a base para ver os acessos correspondentes.</p>
+    <a href="/admin/credentials">Cadastrar, editar ou testar acessos</a>
+  </fieldset>
+  <div class="form-grid"><label>Acessos simultâneos<input type="number" name="max_parallel_accounts" min="1" max="20" value="1" required data-parallel-limit><span class="field-help">Limitado aos acessos selecionados e à capacidade configurada do convênio.</span></label><div class="selection-summary" data-selection-summary aria-live="polite">Selecione a base e pelo menos um acesso.</div></div>
+  <p class="muted" data-capacity-note hidden><span data-capacity-message></span> <a href="/admin/agreements">Revisar o limite do convênio</a>.</p>
+</div>

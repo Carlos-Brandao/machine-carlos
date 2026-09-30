@@ -55,6 +55,7 @@ class RF1Session(PortalSession):
                 credential.username,
                 credential.password,
                 self.consignataria,
+                max_attempts=1,
             ):
                 raise AdapterError(
                     OutcomeKind.RETRYABLE_ERROR,
@@ -75,9 +76,10 @@ class RF1Session(PortalSession):
                 self.credential.username,
                 self.credential.password,
                 self.consignataria,
+                max_attempts=1,
             ):
                 raise AdapterError(
-                    OutcomeKind.CREDENTIAL_ERROR,
+                    OutcomeKind.RETRYABLE_ERROR,
                     "Não foi possível renovar a sessão RF1.",
                     code="rf1_session_login_failed",
                 )
@@ -85,7 +87,7 @@ class RF1Session(PortalSession):
             self.page.goto(self.query_url, wait_until="domcontentloaded")
         if LOGIN_PATH.lower() in self.page.url.lower():
             raise AdapterError(
-                OutcomeKind.CREDENTIAL_ERROR,
+                OutcomeKind.RETRYABLE_ERROR,
                 "A sessão RF1 expirou ao abrir a consulta.",
                 code="rf1_session_expired",
             )
@@ -104,6 +106,7 @@ class RF1Session(PortalSession):
                 OutcomeKind.RETRYABLE_ERROR,
                 "O RF1 não confirmou o CPF solicitado.",
                 code="rf1_identifier_mismatch",
+                end_session=False,
             )
         expected_registration = _registration(item.registration)
         returned_registration = _registration(raw.get("Matricula"))
@@ -112,6 +115,7 @@ class RF1Session(PortalSession):
                 OutcomeKind.RETRYABLE_ERROR,
                 "O RF1 retornou matrícula diferente da solicitada.",
                 code="rf1_registration_mismatch",
+                end_session=False,
             )
         person_keys = {
             "Nome",
@@ -135,6 +139,9 @@ class RF1Session(PortalSession):
             margins={key: raw.get(key) for key in margin_keys},
             raw=raw,
         )
+
+    def recover(self) -> None:
+        self.page.reload(wait_until="domcontentloaded", timeout=20_000)
 
     def close(self) -> None:
         page = getattr(self, "page", None)
@@ -218,14 +225,12 @@ class RF1Adapter:
                 code="rf1_timeout",
                 message="RF1 não confirmou a resposta no tempo limite.",
                 stage=stage,
-                end_session=True,
+                end_session=stage != "consultation",
                 raw={"Status_Robo": "Timeout"},
             )
         if isinstance(exc, RF1Error):
             kind = OutcomeKind.RETRYABLE_ERROR
-            if stage == "login":
-                kind = OutcomeKind.CREDENTIAL_ERROR
-            elif "CPF inválido" in str(exc):
+            if "CPF inválido" in str(exc):
                 kind = OutcomeKind.PERMANENT_ERROR
             return ExecutionOutcome.error(
                 kind,

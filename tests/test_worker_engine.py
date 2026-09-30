@@ -383,7 +383,7 @@ class GenericWorkerTests(unittest.TestCase):
         self.assertEqual(3, len(api.calls_for("/api/workers/items/requeue")))
         self.assertFalse(api.calls_for("/api/workers/items/complete"))
 
-    def test_integration_outage_requeues_and_cools_down_credential(self) -> None:
+    def test_integration_outage_has_its_own_circuit_scope(self) -> None:
         api = FakeAPI()
         worker, _ = make_worker(
             api,
@@ -400,7 +400,7 @@ class GenericWorkerTests(unittest.TestCase):
         )
         self.assertEqual("end_session", worker._apply_outcome(item, 3, outcome))
         report = api.calls_for("/api/workers/credentials/report")[0]["json"]
-        self.assertEqual("portal_unavailable", report["outcome"])
+        self.assertEqual("integration_unavailable", report["outcome"])
         self.assertEqual(1800, report["cooldown_seconds"])
 
     def test_credential_error_requeues_and_invalidates_only_that_credential(self) -> None:

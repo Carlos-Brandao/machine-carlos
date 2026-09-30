@@ -665,6 +665,9 @@ class SafeConsigSession(PortalSession):
         raw = _detail_payload(self.page)
         return _found_outcome(item, raw)
 
+    def recover(self) -> None:
+        self.page.reload(wait_until="domcontentloaded", timeout=20_000)
+
     def close(self) -> None:
         for resource_name in ("context", "browser"):
             resource = getattr(self, resource_name, None)
@@ -727,7 +730,7 @@ class SafeConsigAdapter:
                 message=str(exc)[:500],
                 stage=stage,
                 retry_after_seconds=60,
-                end_session=True,
+                end_session=stage != "consultation",
             )
         if isinstance(exc, PlaywrightTimeoutError):
             return ExecutionOutcome.error(
@@ -737,7 +740,7 @@ class SafeConsigAdapter:
                 message=str(exc)[:500] or "Tempo limite na consulta SAFE.",
                 stage=stage,
                 retry_after_seconds=60,
-                end_session=True,
+                end_session=stage != "consultation",
                 raw={"Status_Robo": "Timeout"},
             )
         if isinstance(exc, SafeConsigPortalUnavailable):

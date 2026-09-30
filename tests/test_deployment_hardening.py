@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import deploy
-from scripts.build_service_envs import _selected_values
+from scripts.build_service_envs import SERVICE_KEYS, _selected_values
 from services.remote import RemoteSettings
 
 
@@ -38,15 +38,18 @@ class DeploymentHardeningTests(unittest.TestCase):
         }
 
         worker = _selected_values(source, "worker")
-        telegram = _selected_values(source, "telegram")
         backend = _selected_values(source, "backend")
+        scheduler = _selected_values(source, "scheduler")
 
         self.assertNotIn("DATABASE_URL", worker)
         self.assertNotIn("APP_MASTER_KEY", worker)
-        self.assertNotIn("DATABASE_URL", telegram)
-        self.assertNotIn("APP_MASTER_KEY", telegram)
         self.assertEqual("postgresql://secret", backend["DATABASE_URL"])
         self.assertEqual("master-secret", backend["APP_MASTER_KEY"])
+        self.assertEqual("postgresql://secret", scheduler["DATABASE_URL"])
+        self.assertNotIn("telegram", SERVICE_KEYS)
+        for values in (worker, backend, scheduler):
+            self.assertNotIn("TELEGRAM_BOT_TOKEN", values)
+            self.assertNotIn("TELEGRAM_BACKEND_API_TOKEN", values)
 
     def test_activation_backs_up_migrates_tokens_then_switches_release(self) -> None:
         settings = RemoteSettings(

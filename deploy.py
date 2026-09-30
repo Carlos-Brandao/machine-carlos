@@ -40,8 +40,7 @@ ROOT_FILES = (
     "run_admin.py",
     "run_backend_api.py",
     "run_scheduler.py",
-    "run_notification_worker.py",
-    "run_telegram_bot.py",
+    "run_operational_scheduler.py",
     "run_worker.py",
 )
 SOURCE_DIRS = (
@@ -63,8 +62,6 @@ SERVICE_UNITS = (
     "machine-facil-worker.service",
     "machine-safeconsig-worker.service",
     "machine-consiglog-worker.service",
-    "machine-notifications.service",
-    "machine-telegram.service",
     "machine-scheduler.service",
 )
 STOP_UNITS = (
@@ -250,7 +247,7 @@ if ! id -u "$service_user" >/dev/null 2>&1; then
     --shell /usr/sbin/nologin "$service_user"
 fi
 usermod -a -G "$runtime_group" "$service_user"
-for account in machine-backend machine-worker machine-telegram machine-notify; do
+for account in machine-backend machine-worker; do
   if ! getent group "$account" >/dev/null; then
     groupadd --system "$account"
   fi
@@ -270,8 +267,6 @@ install -d -o root -g "$service_group" -m 0750 "$root/backups"
 install -d -o root -g "$runtime_group" -m 2770 "$root/shared/playwright"
 install -d -o machine-backend -g machine-backend -m 0750 "$root/shared/home/machine-backend"
 install -d -o machine-worker -g machine-worker -m 0750 "$root/shared/home/machine-worker"
-install -d -o machine-telegram -g machine-telegram -m 0750 "$root/shared/home/machine-telegram"
-install -d -o machine-notify -g machine-notify -m 0750 "$root/shared/home/machine-notify"
 for name in {persistent}; do
   install -d -o root -g "$runtime_group" -m 2770 "$root/shared/$name"
 done
@@ -525,7 +520,7 @@ def _activate_release(
     runtime_units = " ".join(
         shlex.quote(item)
         for item in SERVICE_UNITS
-        if item in {"machine-notifications.service", "machine-telegram.service"}
+        if item.endswith("-worker.service")
     )
     persistent = " ".join(shlex.quote(item) for item in PERSISTENT_DIRS)
     backup_command = (
@@ -596,6 +591,10 @@ if [[ -d "$legacy" && ( "$current_before" == "$legacy" || ! -f "$root/shared/.le
 fi
 
 {backup_command}
+systemctl disable machine-telegram.service machine-notifications.service 2>/dev/null || true
+env PYTHONPATH="$release" \\
+  "$release/.venv/bin/python" "$release/scripts/retire_telegram.py" \\
+  --env-file "$root/shared/.env"
 as_account machine-backend env HOME="$root/shared/home/machine-backend" \\
   MACHINE_STORAGE_DIR="$root/shared/storage" \\
   PLAYWRIGHT_BROWSERS_PATH="$root/shared/playwright" \\

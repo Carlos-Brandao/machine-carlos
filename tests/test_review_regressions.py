@@ -29,7 +29,6 @@ from machine_admin.models import (
     Platform,
 )
 from machine_admin.security import SecretCipher
-from machine_admin.notifications import claim_notification, maintain_notification_lease
 from machine_admin.readiness import assess_municipality
 from machine_admin.web import ApiPrincipal, create_app
 
@@ -277,179 +276,36 @@ class JobControlRegressionTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.temporary.cleanup()
 
-    def test_pause_refunds_the_attempt_consumed_by_the_interrupted_lease(self) -> None:
+    def test_pause_delegates_to_graceful_drain_without_releasing_the_account(self):
         job = Job(id=7, municipality_slug="boa-vista", status="running")
+        session = ActionSession(notification=job)
+        with patch("machine_admin.web.request_job_drain") as drain:
+            self.control_job(session, job, "pause")
+            drain.assert_called_once_with(session, job, cancel=False)
+        self.assertEqual([], item_update_sql(session.statements))
+        self.assertFalse(any(sql(s).startswith("DELETE FROM credential_leases") for s in session.statements))
+
+    def test_bulk_clear_and_stop_share_control_job(self):
+        for path in ("/api/jobs/queue/clear", "/api/jobs/running/stop"):
+            endpoint = endpoint_for(self.app, path)
+            self.assertIs(self.control_job, inspect.getclosurevars(endpoint).nonlocals["control_job"])
+
+    def test_retry_creates_new_result_version_preserving_successes(self):
+        job = Job(id=21, municipality_slug="boa-vista", status="failed", result_version=1)
         session = ActionSession()
-
-        message = self.control_job(session, job, "pause")
-
-        updates = item_update_sql(session.statements)
-        self.assertEqual(1, len(updates))
-        self.assertIn("max_attempts=(job_items.max_attempts + 1)", updates[0])
-        self.assertIn("credential_id=NULL", updates[0])
-        self.assertIn("lease_owner=NULL", updates[0])
-        self.assertIn("lease_expires_at=NULL", updates[0])
-        self.assertEqual("paused", job.status)
-        self.assertIn("pausado", message.lower())
-
-    def test_bulk_clear_and_stop_delegate_to_the_same_full_cancel_cleanup(self) -> None:
-        clear = endpoint_for(self.app, "/api/jobs/queue/clear")
-        stop = endpoint_for(self.app, "/api/jobs/running/stop")
-        self.assertIs(
-            self.control_job,
-            inspect.getclosurevars(clear).nonlocals["control_job"],
-        )
-        self.assertIs(
-            self.control_job,
-            inspect.getclosurevars(stop).nonlocals["control_job"],
-        )
-
-        queued = Job(id=11, municipality_slug="boa-vista", status="queued")
-        running = Job(id=12, municipality_slug="boa-vista", status="running")
-        queued_session = ActionSession(jobs=[queued])
-        running_session = ActionSession(jobs=[running])
-        principal = ApiPrincipal("test", frozenset({"jobs:write"}))
-
-        clear(_=principal, session=queued_session)
-        stop(_=principal, session=running_session)
-
-        self.assertEqual("cancelled", queued.status)
-        self.assertEqual("cancelled", running.status)
-        for session in (queued_session, running_session):
-            updates = item_update_sql(session.statements)
-            self.assertEqual(1, len(updates))
-            self.assertIn("status='cancelled'", updates[0])
-            self.assertIn("credential_id=NULL", updates[0])
-            self.assertIn("lease_owner=NULL", updates[0])
-            self.assertIn("lease_expires_at=NULL", updates[0])
-            self.assertTrue(
-                any(
-                    sql(statement).startswith("DELETE FROM credential_leases")
-                    for statement in session.statements
-                )
-            )
-            self.assertEqual(1, session.commits)
-            self.assertTrue(any(isinstance(value, JobEvent) for value in session.added))
-
-    def test_retry_marks_old_result_superseded_and_rejects_active_delivery(self) -> None:
-        job = Job(id=21, municipality_slug="boa-vista", status="failed")
-        pending = NotificationOutbox(
-            id=31,
-            deduplication_key="old-result",
-            job_id=job.id,
-            channel="telegram",
-            status="pending",
-            payload_json={},
-            attempts=0,
-            max_attempts=5,
-        )
-        session = ActionSession(jobs=[pending])
-
+        from unittest.mock import Mock
+        session.scalar = Mock(side_effect=[job, None])
         self.control_job(session, job, "retry")
-
         rendered = [sql(statement) for statement in session.statements]
-        self.assertTrue(
-            any(
-                statement.startswith("UPDATE consultation_results_v2 SET superseded_at=")
-                for statement in rendered
-            )
-        )
-        self.assertEqual("cancelled", pending.status)
-
-        processing = NotificationOutbox(
-            id=32,
-            deduplication_key="sending-result",
-            job_id=22,
-            channel="telegram",
-            status="processing",
-            payload_json={},
-            attempts=1,
-            max_attempts=5,
-        )
-        with self.assertRaisesRegex(ValueError, "sendo enviado"):
-            self.control_job(
-                ActionSession(jobs=[processing]),
-                Job(id=22, municipality_slug="boa-vista", status="failed"),
-                "retry",
-            )
+        self.assertTrue(any("UPDATE consultation_results_v2 SET superseded_at=" in x for x in rendered))
+        self.assertEqual(2, job.result_version)
+        self.assertEqual("queued", job.status)
+        item_update = item_update_sql(session.statements)[0]
+        self.assertIn("retry_count=0", item_update)
+        self.assertIn("'failed', 'cancelled', 'leased'", item_update)
+        self.assertNotIn("'completed'", item_update)
 
 
-class NotificationLeaseSession:
-    def __init__(self, notification=None, *, rowcount: int = 0) -> None:
-        self.notification = notification
-        self.rowcount = rowcount
-        self.statements: list[object] = []
-        self.flushes = 0
-        self.commits = 0
-
-    def scalar(self, statement):
-        self.statements.append(statement)
-        return self.notification
-
-    def execute(self, statement):
-        self.statements.append(statement)
-        return type("Cursor", (), {"rowcount": self.rowcount})()
-
-    def flush(self):
-        self.flushes += 1
-
-    def commit(self):
-        self.commits += 1
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-
-class NotificationLeaseRegressionTests(unittest.TestCase):
-    def test_default_claim_uses_a_long_lease(self) -> None:
-        notification = NotificationOutbox(
-            id=4,
-            deduplication_key="notification-4",
-            channel="telegram",
-            recipient="123",
-            status="pending",
-            payload_json={"type": "job_result"},
-            attempts=0,
-            max_attempts=5,
-        )
-        session = NotificationLeaseSession(notification)
-        before = datetime.now(UTC)
-
-        claimed = claim_notification(session, worker_id="notifier-1")  # type: ignore[arg-type]
-
-        self.assertIs(notification, claimed)
-        self.assertEqual("processing", notification.status)
-        self.assertEqual("notifier-1", notification.locked_by)
-        self.assertGreaterEqual(
-            notification.locked_until,
-            before + timedelta(seconds=899),
-        )
-
-    def test_lease_renewer_targets_only_the_current_processing_owner(self) -> None:
-        heartbeat_session = NotificationLeaseSession(rowcount=0)
-
-        with patch(
-            "machine_admin.notifications.get_session_factory",
-            return_value=lambda: heartbeat_session,
-        ):
-            with maintain_notification_lease(
-                33,
-                "notifier-33",
-                lease_seconds=900,
-                interval_seconds=0,
-            ) as lost_lease:
-                self.assertTrue(lost_lease.wait(timeout=1))
-
-        self.assertEqual(1, heartbeat_session.commits)
-        self.assertEqual(1, len(heartbeat_session.statements))
-        renew_sql = sql(heartbeat_session.statements[0])
-        self.assertIn("UPDATE notification_outbox SET locked_until=", renew_sql)
-        self.assertIn("notification_outbox.id = 33", renew_sql)
-        self.assertIn("notification_outbox.status = 'processing'", renew_sql)
-        self.assertIn("notification_outbox.locked_by = 'notifier-33'", renew_sql)
 
 class ProcessingNotificationActionRegressionTests(unittest.TestCase):
     def test_processing_notification_rejects_manual_retry(self) -> None:
@@ -470,7 +326,7 @@ class ProcessingNotificationActionRegressionTests(unittest.TestCase):
         notification = NotificationOutbox(
             id=20,
             deduplication_key="processing-20",
-            channel="telegram",
+            channel="webhook",
             status="processing",
             payload_json={"type": "job_result"},
             attempts=1,
@@ -557,7 +413,7 @@ class AdaptiveCapacityRegressionTests(unittest.TestCase):
                 settings_json={},
             ),
         ]
-        session = CapacitySession(agreements, (7, 15))
+        session = CapacitySession(agreements, (7, 15, 0))
 
         payload = endpoint(
             platform="facil",

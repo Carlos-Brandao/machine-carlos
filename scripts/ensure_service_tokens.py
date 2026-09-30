@@ -18,10 +18,6 @@ from machine_admin.services import issue_api_token
 
 SERVICE_TOKENS = {
     "WORKER_API_TOKEN": ("system-workers", ["jobs:read", "workers:execute"]),
-    "TELEGRAM_BACKEND_API_TOKEN": (
-        "system-telegram-controller",
-        ["jobs:read", "jobs:write"],
-    ),
 }
 
 

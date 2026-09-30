@@ -11,9 +11,9 @@
 </div>
 
 <section class="help-grid" aria-label="Como a execução é decidida">
-  <article><span class="help-number">1</span><div><strong>Prontidão antes da fila</strong><p>Uma execução só inicia com adaptador homologado, URLs, integração, acesso válido e worker online.</p></div></article>
-  <article><span class="help-number">2</span><div><strong>Agenda no backend</strong><p>Dias e horários são avaliados aqui. O worker não possui uma segunda regra escondida.</p></div></article>
-  <article><span class="help-number">3</span><div><strong>Concorrência real</strong><p>O limite do convênio é combinado com a quantidade de acessos e workers disponíveis.</p></div></article>
+  <article><span class="help-number">1</span><div><strong>Prontidão antes da fila</strong><p>Uma consulta só inicia com portal configurado, integração, acesso válido e serviço de consulta online.</p></div></article>
+  <article><span class="help-number">2</span><div><strong>Horários permitidos</strong><p>Esta janela limita quando o portal pode ser consultado. Para repetir uma base automaticamente, use Agendamentos.</p></div></article>
+  <article><span class="help-number">3</span><div><strong>Concorrência real</strong><p>O limite do convênio é combinado com os acessos distintos selecionados para cada consulta.</p></div></article>
 </section>
 
 <section class="card">
@@ -73,7 +73,7 @@
           <strong>{{ report.summary }}</strong>
           {% if report.issues %}
           <ul>{% for issue in report.issues %}<li><span>{{ issue.message }}</span><small>{{ issue.action }}</small></li>{% endfor %}</ul>
-          {% else %}<p>Checklist completo. {{ report.active_credentials }} acesso(s) e {{ report.online_workers }} worker(s) detectado(s).</p>{% endif %}
+          {% else %}<p>Configuração completa. {{ report.active_credentials }} acesso(s) utilizável(is); serviço de consulta online.</p>{% endif %}
         </div>
 
         {% if user.role == 'admin' %}
@@ -95,7 +95,7 @@
           <fieldset><legend>Entrada e capacidade</legend>
             <label class="checkbox-field fixed"><input type="checkbox" checked disabled> CPF obrigatório</label>
             <label class="checkbox-field"><input type="checkbox" name="registration_required" {% if 'registration' in schema.get('required', []) %}checked{% endif %}> Matrícula obrigatória</label>
-            <label>Máximo de workers<input type="number" name="max_workers" min="1" max="20" value="{{ item.max_workers }}" required><span class="field-help">Cada acesso continua respeitando seu próprio limite.</span></label>
+            <label>Limite de acessos simultâneos<input type="number" name="max_workers" min="1" max="20" value="{{ item.max_workers }}" required><span class="field-help">Exige usuários distintos do portal. Um acesso mantém apenas uma sessão.</span></label>
           </fieldset>
           <fieldset><legend>Agenda do convênio</legend>
             <div class="weekday-picker" aria-label="Dias permitidos">

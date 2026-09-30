@@ -51,6 +51,7 @@ def _item(**overrides) -> JobItem:
         "status": "leased",
         "outcome": None,
         "attempts": 1,
+        "retry_count": 0,
         "max_attempts": 3,
         "lease_owner": "worker-1",
         "lease_expires_at": datetime.now(UTC) + timedelta(minutes=2),
@@ -234,7 +235,7 @@ class QueueHotPathDeltaTests(unittest.TestCase):
 
     def test_exhausted_requeue_adds_failed_and_retryable_once(self) -> None:
         job = _job()
-        item = _item(attempts=3, max_attempts=3)
+        item = _item(attempts=3, retry_count=2, max_attempts=3)
         session = QueueSession(job, item)
 
         requeue_job_item(

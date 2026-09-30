@@ -240,8 +240,10 @@ def _login(
     usuario: str,
     senha: str,
     consignataria: str | None = None,
+    *,
+    max_attempts: int | None = None,
 ) -> bool:
-    for tentativa in range(1, LOGIN_ATTEMPTS + 1):
+    for tentativa in range(1, (max_attempts or LOGIN_ATTEMPTS) + 1):
         page.goto(login_url, wait_until="domcontentloaded")
         user_field = page.locator(f"{_PFXL}txtUsuario")
         user_field.fill(usuario)

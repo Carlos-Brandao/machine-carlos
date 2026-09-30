@@ -1,7 +1,7 @@
 # Machine — Central de Robôs
 
 Aplicação para importar bases, executar consultas de margem em portais de
-consignação, acompanhar tentativas e entregar o resultado pelo Telegram.
+consignação, acompanhar tentativas, agendar consultas e exportar resultados pelo painel ou API.
 
 O sistema usa:
 
@@ -9,9 +9,9 @@ O sistema usa:
 - PostgreSQL como fonte oficial;
 - Alembic para migrations;
 - GenericWorker para execução concorrente;
-- adapters isolados para RF1, FACILCONSIG e CONSIGX;
+- adapters isolados para RF1, FACILCONSIG, SAFE e CONSIGX;
 - Playwright nos portais;
-- uma outbox durável para Telegram.
+- agendamentos persistentes, exportações versionadas e webhooks assinados.
 
 As regras oficiais estão em
 [docs/BUSINESS_RULES.md](docs/BUSINESS_RULES.md). O contrato para implementar
@@ -60,29 +60,28 @@ Desenvolvimento, em terminais separados:
     python run_worker.py rf1
     python run_worker.py facil
     python run_worker.py consiglog
-    python run_notification_worker.py
-    python run_telegram_bot.py
+    python run_worker.py safeconsig
+    python run_operational_scheduler.py
 
 run_scheduler.py permanece como supervisor local compatível e inicia somente os
 adapters transacionais habilitados. Em produção, cada pool usa uma unidade
 systemd independente; isso evita que FACIL ou outro worker seja iniciado duas
 vezes.
 
-SAFE, Grid e EasyConsig estão bloqueados para novos jobs até possuírem adapter
+Grid e EasyConsig estão bloqueados para novos jobs até possuírem adapter
 transacional homologado.
 
 ## Configuração no painel
 
 A ordem recomendada é:
 
-1. abra **Robôs e regras** e confira processadora, URLs, entrada, agenda e
-   concorrência;
-2. cadastre 2Captcha e Telegram em **Integrações**;
-3. cadastre um ou mais acessos em **Acessos aos portais**;
-4. crie tokens separados para workers e Telegram;
-5. importe uma base em **Bases**;
-6. inicie o job e acompanhe **Execuções** e **Eventos**;
-7. acompanhe o arquivo final em **Envios**.
+1. abra **Configurações → Convênios e regras** e confira URLs, janela e limite de acessos;
+2. configure 2Captcha em **Configurações → Integrações**;
+3. cadastre usuários diferentes em **Acessos** e use **Testar acesso**;
+4. importe uma base em **Bases**;
+5. abra **Nova consulta**, escolha a base, os acessos e o paralelismo;
+6. acompanhe retornos, erros e progresso por acesso em **Consultas**;
+7. use **Agendamentos** para recorrência e **Configurações → API** para integrações.
 
 Prontidão é fail-closed: o painel explica o motivo e a próxima ação quando um
 convênio não pode rodar.
@@ -110,29 +109,50 @@ O worker não decide horário nem retry. Ele só executa jobs que a API marca co
 executáveis. Se todos os itens estiverem aguardando backoff, nenhum login ou
 captcha é aberto.
 
-## Telegram
+## Agendamentos, API e entregas
 
-Existe um único TELEGRAM_BOT_TOKEN. O controlador seleciona convênio e base
-existente; nunca cria um job sem base. O resultado é enviado somente ao chat
-que solicitou o job.
+Telegram foi retirado. Nenhum serviço ou robô envia mensagens pelo bot.
+Dados históricos e backups são preservados; tokens locais antigos são revogados.
 
-Configure no cofre ou no .env:
+Agendamentos usam cron de cinco campos e fuso IANA, exibindo as próximas
+execuções. Uma ocorrência só gera uma consulta; execuções sobrepostas da
+mesma agenda são ignoradas e registradas. Após indisponibilidade, horários
+fora da tolerância não geram uma tempestade de consultas atrasadas.
 
-    TELEGRAM_BOT_TOKEN=...
-    TELEGRAM_ALLOWED_USER_IDS=123456789
-    BACKEND_API_URL=http://127.0.0.1:8000
-    TELEGRAM_BACKEND_API_TOKEN=...
-    WORKER_API_URL=http://127.0.0.1:8000
-    WORKER_API_TOKEN=...
-    TWOCAPTCHA_API_KEY=...
+A documentação autenticada por token para uso das rotas está em `/docs`.
+Tokens têm escopos separados; o painel usa sessão e CSRF.
+Criação aceita chave de idempotência. Resultados são paginados. A exportação
+por API gera artefato XLSX/CSV/JSON com snapshot e checksum, consultável até
+ficar pronto. Webhooks informam metadados de conclusão, nunca o conteúdo da base.
 
-Escopos:
+Workers usam apenas `jobs:read,workers:execute`; não recebem senha do banco.
+O serviço scheduler executa manutenção, agendas, exportações e entregas,
+independente do número de processos web.
 
-- controlador Telegram: jobs:read,jobs:write;
-- workers: jobs:read,workers:execute.
+Rotas principais (todas exigem Bearer com o respectivo escopo):
 
-A conclusão grava o envio na outbox. Falhas não revertem o job nem repetem
-consultas; a tela **Envios** mostra o erro e permite tentar novamente.
+| Operação | Rota | Escopo |
+|---|---|---|
+| Importar base | POST /api/v1/datasets (multipart) | datasets:write |
+| Criar consulta | POST /api/v1/jobs | jobs:write |
+| Acompanhar | GET /api/v1/jobs/{id} | jobs:read |
+| Resultados | GET /api/v1/jobs/{id}/results?after_id=0&limit=100 | results:read |
+| Preparar arquivo | POST /api/v1/jobs/{id}/exports | exports:write |
+| Estado/arquivo | GET /api/v1/exports/{id} e /download | exports:read |
+| Agendar | POST /api/v1/schedules | schedules:write |
+
+Exemplo de criação: `{"dataset_id": 6, "selected_credential_ids": [2, 8],
+"max_parallel_accounts": 2}`, com header `Idempotency-Key: minha-solicitacao-unica`.
+Use IDs reais do seu cadastro. O teto do convênio deve permitir dois acessos.
+Exportação recebe `{"format":"xlsx"}` (ou csv/json), retorna 202 e ID; consulte
+o estado antes de baixar. Operadores via API só acessam registros próprios;
+administradores acessam o histórico global, sempre com escopo explícito.
+
+Webhooks só aceitam domínios previamente listados em `WEBHOOK_ALLOWED_HOSTS`.
+O receptor deve validar `X-Machine-Signature: t=timestamp,v1=hex`, calculado com
+HMAC-SHA256 sobre `timestamp + '.' + corpo`, rejeitar timestamps antigos e
+deduplicar pelo header `Idempotency-Key`. O segredo de assinatura é retornado
+somente ao cadastrar o destino. Não coloque senhas no código nem em URLs.
 
 ## Segurança
 
@@ -173,7 +193,7 @@ Na ativação ele:
 1. encerra os browsers graciosamente;
 2. cria backup do PostgreSQL, storage e configuração;
 3. aplica `alembic upgrade head`;
-4. garante tokens separados para workers e Telegram;
+4. retira o Telegram e garante token dedicado aos executores;
 5. instala unidades com usuários Linux e ambientes mínimos por serviço;
 6. valida `/health` e uma janela sem reinícios dos processos.
 

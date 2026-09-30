@@ -13,6 +13,7 @@ from machine_admin.models import (
     AdminUser,
     ApiToken,
     AuditLog,
+    CredentialLease,
     IntegrationSecret,
     Municipality,
     Platform,
@@ -136,7 +137,9 @@ def issue_api_token(
     expires_in_days: int | None = 365,
 ) -> tuple[ApiToken, str]:
     name = name.strip()
-    allowed_scopes = {"jobs:read", "jobs:write", "workers:execute"}
+    allowed_scopes = {"jobs:read", "jobs:write", "workers:execute", "datasets:read",
+                      "datasets:write", "results:read", "exports:read", "exports:write", "schedules:read",
+                      "schedules:write", "webhooks:read", "webhooks:write"}
     normalized_scopes = sorted(set(scopes))
     if not name:
         raise ValueError("Nome do token é obrigatório.")
@@ -200,6 +203,7 @@ def create_portal_credential(
             password, context=f"portal:{context_id}:password"
         ),
         portal_username=username.strip(),
+        login_identity=username.strip().lower(),
         portal_password=password,
         consignataria=legacy_profile or profile,
         portal_profile=profile,
@@ -226,6 +230,13 @@ def update_portal_credential(
     consignataria: str | None = None,
     portal_profile: str | None = None,
 ) -> PortalCredential:
+    # Compartilha o lock com quem reserva a conta; nunca troca senha de uma
+    # sessão que ainda está aberta.
+    session.refresh(credential, with_for_update=True)
+    if session.scalar(select(CredentialLease.credential_id).where(
+        CredentialLease.credential_id == credential.id,
+        CredentialLease.expires_at > datetime.now(UTC))):
+        raise ValueError("Este acesso está em uso. Pause e aguarde o encerramento antes de editar.")
     label = label.strip()
     if not label:
         raise ValueError("Identificação é obrigatória.")
@@ -255,6 +266,7 @@ def update_portal_credential(
         normalized_username = username.strip()
         access_changed = access_changed or normalized_username != credential.portal_username
         credential.portal_username = normalized_username
+        credential.login_identity = normalized_username.lower()
         credential.username_ciphertext = cipher.encrypt(
             normalized_username, context=f"portal:{context_id}:username"
         )
@@ -265,10 +277,14 @@ def update_portal_credential(
             password, context=f"portal:{context_id}:password"
         )
     if access_changed:
+        # Alterar apenas a senha também deve validar a identidade única. Um
+        # cadastro duplicado desativado não pode contornar a restrição por NULL.
+        credential.login_identity = (credential.portal_username or '').strip().lower() or None
         # Uma correção de usuário/senha/perfil precisa ser testada no próximo
         # lease; manter ``invalid`` ou cooldown tornaria a edição inócua.
         credential.status = "active"
         credential.failure_count = 0
+        credential.login_failure_count = 0
         credential.cooldown_until = None
         credential.last_error = None
         credential.last_validated_at = None
@@ -306,6 +322,17 @@ def migrate_portal_credentials_to_plaintext(session: Session, settings: Settings
         username, password = decrypt_portal_credential(credential, settings)
         credential.portal_username = username
         credential.portal_password = password
+        identity = username.strip().lower()
+        existing = session.scalar(select(PortalCredential.id).where(
+            PortalCredential.municipality_slug == credential.municipality_slug,
+            PortalCredential.login_identity == identity,
+            PortalCredential.id != credential.id).limit(1))
+        if existing:
+            credential.status = 'disabled'
+            credential.login_identity = None
+            credential.last_error = 'Cadastro duplicado do mesmo login; utilize o acesso original.'
+        else:
+            credential.login_identity = identity or None
 
 
 def upsert_integration_secret(
@@ -317,6 +344,8 @@ def upsert_integration_secret(
     description: str = "",
 ) -> IntegrationSecret:
     normalized_key = key.strip().upper()
+    if normalized_key.startswith('TELEGRAM'):
+        raise ValueError('A integração Telegram foi removida.')
     if not normalized_key or not normalized_key.replace("_", "").isalnum():
         raise ValueError("Nome de segredo inválido.")
     if not value:
@@ -332,6 +361,11 @@ def upsert_integration_secret(
     secret.description = description.strip() or None
     secret.rotated_at = datetime.now(UTC)
     session.add(secret)
+    if normalized_key == 'TWOCAPTCHA_API_KEY':
+        from machine_admin.models import OperationalBlock
+        block = session.get(OperationalBlock, ('integration', 'captcha'))
+        if block:
+            session.delete(block)
     session.flush()
     return secret
 

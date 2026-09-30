@@ -22,16 +22,15 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.captcha import resolve_captcha
-from services.telegram import TelegramNotifier
 from services.utils import aguardar_enter
 
 
-async def send_telegram_message(message: str) -> None:
-    await asyncio.to_thread(TelegramNotifier.from_environment().message, message)
+async def log_status_message(message: str) -> None:
+    print(message)
 
 
-async def send_telegram_document(file_path: Path, caption: str) -> None:
-    await asyncio.to_thread(TelegramNotifier.from_environment().document, file_path, caption)
+async def log_output_file(file_path: Path, caption: str) -> None:
+    print(f"{caption}: {file_path.name}")
 
 
 # --- REMOTE VNC/NGROK SESSION FALLBACK ---
@@ -224,7 +223,7 @@ async def _login(
 
             if await check_login_success(page, base_url):
                 print("  [login] OK")
-                await send_telegram_message("✅ *Login Automático com Sucesso:* Captcha resolvido e login efetuado.")
+                await log_status_message("✅ *Login Automático com Sucesso:* Captcha resolvido e login efetuado.")
                 return True
         except Exception as e:
             print(f"  [login] erro na tentativa {tentativa}: {e}")
@@ -236,18 +235,18 @@ async def _login(
 
     # 2. Fallback de Login Manual / Remoto
     print("[AVISO] Login automático falhou. Iniciando fallback...")
-    await send_telegram_message("⚠️ *Falha no Login Automático:* Não foi possível logar via 2Captcha. Iniciando fallback de login manual...")
+    await log_status_message("⚠️ *Falha no Login Automático:* Não foi possível logar via 2Captcha. Iniciando fallback de login manual...")
 
     link_remoto = await start_remote_session()
     if link_remoto:
-        await send_telegram_message(
+        await log_status_message(
             f"⚠️ *Login Manual Necessário!*\n"
             f"Acesse o link abaixo para resolver o captcha e clicar em Entrar:\n\n"
             f"{link_remoto}\n\n"
             f"*Atenção:* Aguardando você acessar..."
         )
     else:
-        await send_telegram_message(
+        await log_status_message(
             "⚠️ *Login Manual Necessário!*\n"
             "O link remoto não pôde ser criado. Por favor, realize o login diretamente no navegador aberto na máquina local."
         )
@@ -256,13 +255,13 @@ async def _login(
     for _ in range(120):
         if await check_login_success(page, base_url):
             print("[INFO] Login detectado!")
-            await send_telegram_message("✅ *Login efetuado com sucesso!* Retomando o robô...")
+            await log_status_message("✅ *Login efetuado com sucesso!* Retomando o robô...")
             await stop_remote_session()
             return True
         await page.wait_for_timeout(5000)
 
     print("[ERRO] Tempo limite para login manual esgotado.")
-    await send_telegram_message("❌ *Tempo esgotado:* O login manual não foi concluído em 10 minutos.")
+    await log_status_message("❌ *Tempo esgotado:* O login manual não foi concluído em 10 minutos.")
     await stop_remote_session()
     return False
 
@@ -401,13 +400,13 @@ async def _run(
         print(f"{len(feitos)} já processados — {len(pendentes)} restantes.")
     if not pendentes:
         print("Nada a processar.")
-        await send_telegram_message(
+        await log_status_message(
             f"ℹ️ *Bot Fácil:* Nada a processar para o convênio `{convenio}`. Todos os registros já estão processados."
         )
         return
 
     # Mensagem de início
-    await send_telegram_message(
+    await log_status_message(
         f"🚀 *Robô FÁCIL Iniciado!*\n"
         f"📂 *Arquivo:* `{input_file.name}`\n"
         f"🏛️ *Convênio:* `{convenio}`\n"
@@ -441,7 +440,7 @@ async def _run(
         try:
             if not await _login(page, base_url, usuario, senha):
                 print("Login falhou.")
-                await send_telegram_message("❌ *Falha Crítica no Login:* O robô não conseguiu acessar o painel do sistema.")
+                await log_status_message("❌ *Falha Crítica no Login:* O robô não conseguiu acessar o painel do sistema.")
                 csv_fh.close()
                 return
 
@@ -458,7 +457,7 @@ async def _run(
                         f"O robô salvará o estado atual e retomará no próximo ciclo."
                     )
                     print(f"[INFO] {msg_pause}")
-                    await send_telegram_message(msg_pause)
+                    await log_status_message(msg_pause)
                     break
 
                 if stop.is_set():
@@ -486,9 +485,9 @@ async def _run(
                     traceback.print_exc()
                     salvar({"_matricula": matricula, "_cpf": cpf, "base": base_tag, "_erro": f"{type(e).__name__}: {e}"})
 
-                # Report de progresso no Telegram a cada 50 registros
+                # Report de progresso no console a cada 50 registros
                 if i % 50 == 0:
-                    await send_telegram_message(
+                    await log_status_message(
                         f"📈 *Status do Robô FÁCIL:*\n"
                         f"*Progresso:* {i}/{len(pendentes)} CPFs consultados nesta rodada."
                     )
@@ -500,22 +499,22 @@ async def _run(
                 temp_csv.unlink()
                 print(f"\nConcluído → {output_file}")
 
-                await send_telegram_message("✅ *Processamento Concluído com Sucesso pelo Bot Fácil!*")
-                await send_telegram_document(
+                await log_status_message("✅ *Processamento Concluído com Sucesso pelo Bot Fácil!*")
+                await log_output_file(
                     output_file,
                     f"📊 *Resultados de Servidores Encontrados — {convenio.upper()}*\n"
                     f"- Total processado: {len(pendentes)} registros"
                 )
             else:
                 print(f"\nParcial salvo em: {temp_csv}")
-                await send_telegram_message(
+                await log_status_message(
                     f"⏳ *Execução Pausada (Ctrl+C):*\n"
                     f"O progresso parcial foi salvo localmente em `temp/`. O robô poderá retomar deste ponto na próxima execução."
                 )
 
         except Exception as e:
             print(f"[ERRO] Erro crítico na execução: {e}")
-            await send_telegram_message(f"🚨 *Erro Crítico no Robô FÁCIL:* {e}")
+            await log_status_message(f"🚨 *Erro Crítico no Robô FÁCIL:* {e}")
         finally:
             await page.context.browser.close()
 

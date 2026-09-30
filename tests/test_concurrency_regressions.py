@@ -53,7 +53,7 @@ class QueueLimitRegressionTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "job_items.attempts < job_items.max_attempts",
+            "job_items.retry_count < job_items.max_attempts",
             sql,
             "Um lease expirado não pode furar o limite central de tentativas.",
         )

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import logging
+import secrets
 
 from sqlalchemy import Select, delete, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -27,6 +29,10 @@ RETRYABLE_OUTCOMES = frozenset(
     }
 )
 SUCCESS_OUTCOMES = frozenset({"found", "not_found"})
+INFRASTRUCTURE_OUTCOMES = RETRYABLE_OUTCOMES - {"retryable_error"}
+ACTIVE_JOB_STATES = {"queued", "running"}
+DRAINING_JOB_STATES = {"pausing", "cancelling"}
+LOG = logging.getLogger(__name__)
 
 _OUTCOME_COUNTERS = {
     "found": "found_items",
@@ -85,6 +91,8 @@ def _apply_job_counter_delta(
 
 def _finalize_job_from_counters(job: Job, *, now: datetime | None = None) -> None:
     """Fecha o job quando os deltas mostram que não há itens em aberto."""
+    if job.status in DRAINING_JOB_STATES | {"paused", "cancelled"}:
+        return
     completed = int(job.completed_items or 0)
     failed = int(job.failed_items or 0)
     if not job.total_items or completed + failed < job.total_items:
@@ -102,15 +110,11 @@ def create_waiting_job(
     session: Session,
     *,
     municipality_slug: str,
-    telegram_user_id: int | None = None,
-    telegram_chat_id: int | None = None,
     requested_by_id: int | None = None,
 ) -> Job:
     job = Job(
         municipality_slug=municipality_slug,
         status="awaiting_dataset",
-        telegram_user_id=telegram_user_id,
-        telegram_chat_id=telegram_chat_id,
         requested_by_id=requested_by_id,
     )
     session.add(job)
@@ -128,7 +132,7 @@ def create_waiting_job(
 def credential_candidate_statement(
     *, municipality_slug: str, now: datetime
 ) -> Select[tuple[PortalCredential]]:
-    leased_ids = select(CredentialLease.credential_id)
+    leased_ids = select(CredentialLease.credential_id).where(CredentialLease.expires_at > now)
     return (
         select(PortalCredential)
         .where(
@@ -158,7 +162,7 @@ def job_item_claim_statement(
         select(JobItem)
         .where(
             JobItem.job_id == job_id,
-            JobItem.attempts < JobItem.max_attempts,
+            JobItem.retry_count < JobItem.max_attempts,
             or_(
                 (JobItem.status == "pending")
                 & or_(
@@ -183,12 +187,41 @@ def acquire_credential(
     lease_seconds: int = 120,
 ) -> PortalCredential | None:
     now = datetime.now(UTC)
-    session.execute(delete(CredentialLease).where(CredentialLease.expires_at <= now))
+    from machine_admin.models import Municipality, OperationalBlock
+    job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+    if not job or job.status not in ACTIVE_JOB_STATES:
+        return None
+    if session.scalar(select(CredentialLease.credential_id).where(
+        CredentialLease.worker_id == worker_id, CredentialLease.expires_at > now
+    )):
+        return None
+    active_leases = session.scalar(select(func.count()).select_from(CredentialLease).where(
+        CredentialLease.job_id == job_id, CredentialLease.expires_at > now
+    )) or 0
+    if active_leases >= max(1, int(job.max_parallel_accounts or 1)):
+        return None
+    municipality = session.get(Municipality, municipality_slug)
+    scopes = [("portal", municipality_slug)]
+    if municipality and municipality.platform_slug in {"rf1", "facil", "safeconsig"}:
+        scopes.append(("integration", "captcha"))
+    for scope_type, scope_key in scopes:
+        block = session.get(OperationalBlock, (scope_type, scope_key))
+        if block and block.blocked_until > now:
+            return None
+    selected_ids = job.selected_credential_ids
+    statement = credential_candidate_statement(municipality_slug=municipality_slug, now=now)
+    if selected_ids is not None:
+        statement = statement.where(PortalCredential.id.in_(selected_ids))
     credential = session.scalar(
-        credential_candidate_statement(municipality_slug=municipality_slug, now=now)
+        statement
     )
     if not credential:
         return None
+    session.execute(delete(CredentialLease).where(
+        CredentialLease.expires_at <= now,
+        or_(CredentialLease.credential_id == credential.id,
+            CredentialLease.worker_id == worker_id),
+    ))
     if credential.status == "cooldown":
         credential.status = "active"
         credential.cooldown_until = None
@@ -197,6 +230,7 @@ def acquire_credential(
             credential_id=credential.id,
             job_id=job_id,
             worker_id=worker_id,
+            lease_token=secrets.token_hex(24),
             heartbeat_at=now,
             expires_at=now + timedelta(seconds=lease_seconds),
         )
@@ -211,6 +245,7 @@ def claim_job_items(
     job_id: int,
     credential_id: int,
     worker_id: str,
+    credential_lease_token: str | None = None,
     batch_size: int = 10,
     lease_seconds: int = 120,
 ) -> list[JobItem]:
@@ -220,6 +255,15 @@ def claim_job_items(
     )
     if not job or job.status not in {"queued", "running"}:
         raise ValueError("O job foi cancelado ou não está mais executável.")
+    lease = session.scalar(select(CredentialLease).where(
+        CredentialLease.credential_id == credential_id,
+        CredentialLease.job_id == job_id,
+        CredentialLease.worker_id == worker_id,
+        CredentialLease.lease_token == credential_lease_token,
+        CredentialLease.expires_at > now,
+    ))
+    if not lease:
+        raise ValueError("Reserva da credencial expirou ou pertence a outra geração.")
     items = list(
         session.scalars(
             job_item_claim_statement(
@@ -247,6 +291,7 @@ def claim_job_items(
         item.status = "leased"
         item.credential_id = credential_id
         item.lease_owner = worker_id
+        item.lease_token = secrets.token_hex(24)
         item.lease_expires_at = expires_at
         item.started_at = item.started_at or now
         item.attempts += 1
@@ -267,24 +312,206 @@ def claim_job_items(
 
 
 def heartbeat_credential(
-    session: Session, *, worker_id: str, lease_seconds: int = 120
+    session: Session, *, worker_id: str, credential_lease_token: str | None = None,
+    lease_seconds: int = 120
 ) -> bool:
     now = datetime.now(UTC)
     cursor = session.execute(
         update(CredentialLease)
-        .where(CredentialLease.worker_id == worker_id)
+        .where(
+            CredentialLease.worker_id == worker_id,
+            CredentialLease.lease_token == credential_lease_token,
+            CredentialLease.expires_at > now,
+        )
         .values(heartbeat_at=now, expires_at=now + timedelta(seconds=lease_seconds))
     )
+    if cursor.rowcount != 1:
+        return False
     session.execute(
         update(JobItem)
-        .where(JobItem.lease_owner == worker_id, JobItem.status == "leased")
+        .where(
+            JobItem.lease_owner == worker_id, JobItem.status == "leased",
+            JobItem.lease_expires_at > now,
+            JobItem.credential_id.in_(select(CredentialLease.credential_id).where(
+                CredentialLease.worker_id == worker_id,
+                CredentialLease.lease_token == credential_lease_token,
+            )),
+        )
         .values(lease_expires_at=now + timedelta(seconds=lease_seconds))
     )
     return cursor.rowcount == 1
 
 
-def release_credential(session: Session, *, worker_id: str) -> None:
-    session.execute(delete(CredentialLease).where(CredentialLease.worker_id == worker_id))
+def release_credential(
+    session: Session, *, worker_id: str, credential_lease_token: str | None = None
+) -> None:
+    lease = session.scalar(select(CredentialLease).where(
+        CredentialLease.worker_id == worker_id,
+        CredentialLease.lease_token == credential_lease_token,
+    ))
+    if not lease:
+        return
+    job_id = lease.job_id
+    if job_id is not None:
+        session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+    # Heartbeat locks the credential lease before the item rows. Release uses
+    # that same order so draining cannot deadlock with a concurrent renewal.
+    lease = session.scalar(select(CredentialLease).where(
+        CredentialLease.worker_id == worker_id,
+        CredentialLease.lease_token == credential_lease_token,
+    ).with_for_update())
+    if not lease:
+        return
+    if job_id is not None:
+        for item in session.scalars(select(JobItem).where(
+            JobItem.job_id == job_id, JobItem.credential_id == lease.credential_id,
+            JobItem.lease_owner == worker_id, JobItem.status == "leased",
+        ).with_for_update()):
+            _finish_attempt(session, item=item, worker_id=worker_id,
+                outcome="abandoned", error_code="worker_drained",
+                error_message="Sessão fechada antes de confirmar a consulta.")
+            item.status = "pending"
+            item.lease_owner = None
+            item.lease_expires_at = None
+            item.credential_id = None
+            item.next_attempt_at = None
+    session.delete(lease)
+    session.flush()
+    if job_id is not None:
+        finalize_draining_job(session, job_id)
+
+
+def request_job_drain(session: Session, job: Job, *, cancel: bool = False) -> str:
+    """Stop claiming immediately, keeping every login reserved until logout."""
+    allowed = ACTIVE_JOB_STATES | {"blocked", "paused", "awaiting_dataset", "pausing"}
+    if job.status not in allowed:
+        raise ValueError("A execução não pode ser pausada/interrompida neste estado.")
+    if not cancel and job.status in {"paused", "pausing"}:
+        return job.status
+    job.status = "cancelling" if cancel else "pausing"
+    session.flush()
+    finalize_draining_job(session, job.id)
+    return job.status
+
+
+def finalize_draining_job(session: Session, job_id: int) -> bool:
+    job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+    if not job or job.status not in DRAINING_JOB_STATES:
+        return False
+    now = datetime.now(UTC)
+    active = session.scalar(select(func.count()).select_from(CredentialLease).where(
+        CredentialLease.job_id == job_id, CredentialLease.expires_at > now
+    )) or 0
+    if active:
+        return False
+    session.execute(delete(CredentialLease).where(
+        CredentialLease.job_id == job_id, CredentialLease.expires_at <= now
+    ))
+    items = list(session.scalars(select(JobItem).where(
+        JobItem.job_id == job_id, JobItem.status.in_(["pending", "leased"])
+    ).with_for_update()))
+    for item in items:
+        if item.status == "leased":
+            _finish_attempt(session, item=item, worker_id=item.lease_owner or "expired",
+                outcome="abandoned", error_code="worker_drained",
+                error_message="Reserva encerrada durante a pausa/interrupção.")
+        item.status = "cancelled" if job.status == "cancelling" else "pending"
+        item.lease_owner = None
+        item.lease_expires_at = None
+        item.credential_id = None
+        item.next_attempt_at = None
+        item.finished_at = now if job.status == "cancelling" else None
+    session.flush()
+    # A drain is an infrequent operator boundary: reconcile historical counters
+    # here while retaining O(1) updates for each ordinary consultation.
+    refresh_job_counters(session, job.id)
+    if job.status == "cancelling":
+        job.status = "cancelled"
+        job.cancelled_at = job.finished_at = now
+    else:
+        job.status = "running"
+        _finalize_job_from_counters(job, now=now)
+        if job.status == "running":
+            job.status = "paused"
+    session.add(JobEvent(job_id=job.id, event_type=f"job.{job.status}",
+        message="Sessões encerradas; execução interrompida." if job.status == "cancelled"
+        else "Sessões encerradas; execução pausada." if job.status == "paused"
+        else "A última consulta foi salva durante o encerramento; execução concluída."))
+    session.flush()
+    return True
+
+
+def process_job_maintenance(session: Session) -> int:
+    """Maintenance owns mutations; one broken job cannot poison the read API."""
+    job_ids = list(session.scalars(select(Job.id).where(
+        Job.status.in_(sorted(ACTIVE_JOB_STATES | DRAINING_JOB_STATES))
+    ).order_by(Job.id).limit(200)))
+    processed = 0
+    for job_id in job_ids:
+        try:
+            with session.begin_nested():
+                expire_exhausted_job_items(session, job_id=job_id)
+                finalize_draining_job(session, job_id)
+                job = session.get(Job, job_id)
+                if job and job.status in ACTIVE_JOB_STATES:
+                    _finalize_job_from_counters(job)
+                session.flush()
+            processed += 1
+        except Exception:
+            LOG.exception("Manutenção do job %s falhou; demais jobs continuam.", job_id)
+    return processed
+
+
+def block_operation(
+    session: Session, *, scope_type: str, scope_key: str,
+    message: str, error_code: str | None = None, cooldown_seconds: int = 900,
+) -> None:
+    from machine_admin.models import OperationalBlock
+    from sqlalchemy.dialects.postgresql import insert
+    until = datetime.now(UTC) + timedelta(seconds=max(60, min(cooldown_seconds, 86_400)))
+    statement = insert(OperationalBlock).values(
+        scope_type=scope_type, scope_key=scope_key, blocked_until=until,
+        message=message[:2000], error_code=error_code, failure_count=1,
+    )
+    session.execute(statement.on_conflict_do_update(
+        index_elements=[OperationalBlock.scope_type, OperationalBlock.scope_key],
+        set_={"blocked_until": until, "message": message[:2000], "error_code": error_code,
+              "failure_count": OperationalBlock.failure_count + 1},
+    ))
+
+
+def apply_credential_report(
+    session: Session, credential: PortalCredential, *, outcome: str,
+    stage: str | None = None, error_code: str | None = None,
+    error_message: str | None = None, cooldown_seconds: int = 900,
+) -> None:
+    """Account rejection, portal outage and captcha outage have different scopes."""
+    now = datetime.now(UTC)
+    message = error_message or "Falha reportada pelo executor."
+    if outcome == "success":
+        credential.status = "active"
+        credential.failure_count = credential.login_failure_count = 0
+        credential.cooldown_until = credential.last_error = None
+        credential.last_validated_at = now
+        return
+    if outcome in {"portal_unavailable", "integration_unavailable"}:
+        block_operation(session,
+            scope_type="portal" if outcome == "portal_unavailable" else "integration",
+            scope_key=credential.municipality_slug if outcome == "portal_unavailable" else "captcha",
+            message=message, error_code=error_code, cooldown_seconds=cooldown_seconds)
+        return
+    credential.failure_count = int(credential.failure_count or 0) + 1
+    credential.last_error = message[:2000]
+    if stage == "login":
+        credential.login_failure_count = int(credential.login_failure_count or 0) + 1
+    if outcome == "invalid_credentials" or int(credential.login_failure_count or 0) >= 3:
+        credential.status = "invalid"
+        credential.cooldown_until = None
+        if outcome != "invalid_credentials":
+            credential.last_error = "Login não confirmado em 3 tentativas. Teste ou atualize o acesso. " + message[:1800]
+    else:
+        credential.status = "cooldown"
+        credential.cooldown_until = now + timedelta(seconds=max(60, cooldown_seconds))
 
 
 def expire_exhausted_job_items(
@@ -307,7 +534,7 @@ def expire_exhausted_job_items(
             select(JobItem)
             .where(
                 JobItem.job_id == job_id,
-                JobItem.attempts >= JobItem.max_attempts,
+                JobItem.retry_count >= JobItem.max_attempts,
                 or_(
                     JobItem.status == "pending",
                     (
@@ -457,7 +684,17 @@ def _finish_attempt(
 def _retry_delay(item: JobItem, requested_seconds: int | None = None) -> int:
     if requested_seconds is not None:
         return max(5, min(requested_seconds, 86_400))
-    return min(30 * (2 ** max(item.attempts - 1, 0)), 3_600)
+    return min(30 * (2 ** min(max(int(item.retry_count or 0) - 1, 0), 7)), 3_600)
+
+
+def _owns_item(item: JobItem | None, worker_id: str, lease_token: str | None) -> bool:
+    if not item or item.status != "leased" or item.lease_owner != worker_id:
+        return False
+    if item.lease_token != lease_token:
+        return False
+    if item.lease_expires_at is None:
+        return False
+    return item.lease_expires_at > datetime.now(UTC)
 
 
 def _apply_retry(
@@ -467,25 +704,37 @@ def _apply_retry(
     error_code: str | None,
     error_message: str | None,
     retry_after_seconds: int | None,
+    consume_attempt: bool = True,
 ) -> bool:
     """Aplica backoff; retorna ``True`` quando o limite foi esgotado."""
     now = datetime.now(UTC)
+    if not consume_attempt and outcome == "retryable_error":
+        item.status = "pending"
+        item.credential_id = item.lease_owner = item.lease_expires_at = None
+        item.finished_at = item.next_attempt_at = None
+        return False
     item.outcome = outcome
     item.error_code = error_code
     item.error_message = error_message
     item.last_error_category = outcome
+    if consume_attempt and outcome == "retryable_error":
+        item.retry_count = int(item.retry_count or 0) + 1
     item.credential_id = None
     item.lease_owner = None
     item.lease_expires_at = None
-    if item.attempts >= item.max_attempts:
+    if int(item.retry_count or 0) >= item.max_attempts:
         item.status = "failed"
         item.finished_at = now
         item.next_attempt_at = None
         return True
     item.status = "pending"
     item.finished_at = None
-    item.next_attempt_at = now + timedelta(
-        seconds=_retry_delay(item, retry_after_seconds)
+    # Outages are throttled at their account/portal/integration scope. A bad
+    # account must not delay this record for the other healthy account.
+    item.next_attempt_at = (
+        None if outcome in INFRASTRUCTURE_OUTCOMES else now + timedelta(
+            seconds=_retry_delay(item, retry_after_seconds)
+        )
     )
     return False
 
@@ -495,6 +744,7 @@ def complete_job_item(
     *,
     worker_id: str,
     item_id: int,
+    lease_token: str | None = None,
     status: str,
     result_ciphertext: bytes,
     outcome: str | None = None,
@@ -520,13 +770,16 @@ def complete_job_item(
         .where(JobItem.id == item_id)
         .with_for_update()
     )
-    if not item or item.status != "leased" or item.lease_owner != worker_id:
-        raise ValueError("Item não pertence a este worker ou o lease expirou.")
-    if not job or job.id != item.job_id or job.status not in {"queued", "running"}:
-        raise ValueError("O job foi cancelado ou não está mais executável.")
     canonical_outcome = outcome or (
         "found" if status == "completed" else "permanent_error"
     )
+    if item and lease_token and item.lease_token == lease_token and item.outcome == canonical_outcome:
+        if item.status in {"completed", "failed"}:
+            return item
+    if not _owns_item(item, worker_id, lease_token):
+        raise ValueError("Item não pertence a este worker ou o lease expirou.")
+    if not job or job.id != item.job_id or job.status not in ACTIVE_JOB_STATES | DRAINING_JOB_STATES:
+        raise ValueError("O job foi cancelado ou não está mais executável.")
     old_status = item.status
     old_outcome = item.outcome
     _finish_attempt(
@@ -653,6 +906,8 @@ def requeue_job_item(
     *,
     worker_id: str,
     item_id: int,
+    lease_token: str | None = None,
+    consume_attempt: bool = True,
     reason: str,
     outcome: str = "retryable_error",
     error_code: str | None = None,
@@ -673,9 +928,12 @@ def requeue_job_item(
     item = session.scalar(
         select(JobItem).where(JobItem.id == item_id).with_for_update()
     )
-    if not item or item.status != "leased" or item.lease_owner != worker_id:
+    if item and lease_token and item.lease_token == lease_token and (item.outcome == outcome or not consume_attempt):
+        if item.status in {"pending", "failed"}:
+            return item
+    if not _owns_item(item, worker_id, lease_token):
         raise ValueError("Item não pertence a este worker ou o lease expirou.")
-    if not job or job.id != item.job_id or job.status not in {"queued", "running"}:
+    if not job or job.id != item.job_id or job.status not in ACTIVE_JOB_STATES | DRAINING_JOB_STATES:
         raise ValueError("O job foi cancelado ou não está mais executável.")
     old_status = item.status
     old_outcome = item.outcome
@@ -683,7 +941,7 @@ def requeue_job_item(
         session,
         item=item,
         worker_id=worker_id,
-        outcome=outcome,
+        outcome=outcome if consume_attempt else "abandoned",
         error_code=error_code,
         error_message=reason,
         stage=stage,
@@ -694,11 +952,13 @@ def requeue_job_item(
         error_code=error_code,
         error_message=reason,
         retry_after_seconds=retry_after_seconds,
+        consume_attempt=consume_attempt,
     )
     session.add(
         JobEvent(
             job_id=item.job_id,
-            event_type="consulta.erro" if exhausted else "consulta.reenfileirada",
+            event_type=("consulta.devolvida" if not consume_attempt else
+                        "consulta.erro" if exhausted else "consulta.reenfileirada"),
             message=reason[:500],
             event_data={
                 "item_id": item.id,

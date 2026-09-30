@@ -11,7 +11,6 @@ import pandas as pd
 import requests
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
 from machine_admin.secret_store import get_runtime_secret
-from services.telegram import TelegramNotifier
 from services.utils import mask_cpf
 
 try:
@@ -19,14 +18,14 @@ try:
 except ImportError:
     ngrok = None
 
-# --- TELEGRAM INTEGRATION ---
+# --- LOCAL STATUS ---
 
-def send_telegram_message(message: str) -> None:
-    TelegramNotifier.from_environment().message(message)
+def log_status_message(message: str) -> None:
+    print(message)
 
 
-def send_telegram_document(file_path: Path, caption: str) -> None:
-    TelegramNotifier.from_environment().document(file_path, caption)
+def log_output_file(file_path: Path, caption: str) -> None:
+    print(f"{caption}: {file_path.name}")
 
 # --- REMOTE VNC/NGROK SESSION FALLBACK ---
 
@@ -232,7 +231,7 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
     print(f'[INFO] Convênio: {convenio.upper()}')
     print(f'[INFO] CPFs já processados: {len(processed_cpfs)}')
     print(f'[INFO] CPFs a processar: {total_cpfs_to_process}')
-    send_telegram_message(
+    log_status_message(
         f"🚀 *Robô SafeConsig ({convenio.upper()}) Iniciado!*\n"
         f"- Total do Lote: {len(unique_cpfs)} CPFs\n"
         f"- Já processados: {len(processed_cpfs)}\n"
@@ -278,7 +277,7 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
             
         except Exception as e:
             print(f'[ERRO] Falha ao inicializar o motor de navegação: {e}')
-            send_telegram_message(f"❌ *Erro Crítico de Inicialização:* {e}")
+            log_status_message(f"❌ *Erro Crítico de Inicialização:* {e}")
             return
 
         try:
@@ -297,7 +296,7 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                 
                 api_key = get_runtime_secret("TWOCAPTCHA_API_KEY")
                 if api_key:
-                    send_telegram_message("🔄 *Captcha detectado.* Resolvendo automaticamente...")
+                    log_status_message("🔄 *Captcha detectado.* Resolvendo automaticamente...")
                     token = solve_turnstile(api_key, sitekey, page.url)
 
                     if token:
@@ -329,7 +328,7 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                         page.click('button[type="submit"]')
                         page.wait_for_timeout(3000)
                     else:
-                        send_telegram_message("⚠️ *Falha na resolução do captcha.* Por favor resolva manualmente.")
+                        log_status_message("⚠️ *Falha na resolução do captcha.* Por favor resolva manualmente.")
 
             # Verifica se o login teve sucesso
             page.wait_for_timeout(3000)
@@ -341,33 +340,33 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                 agora_br = agora_utc - datetime.timedelta(hours=3)
                 if agora_br.hour < 9 and os.environ.get('MANUAL_RUN') != 'True':
                     print("[INFO] Falha no login antes das 09:00 BRT. Encerrando execução sem fallback.")
-                    send_telegram_message(f"⚠️ *Falha no Login Automático (07:00):* Não foi possível logar de forma automática via 2Captcha no convênio {convenio.upper()}. O robô foi encerrado.")
+                    log_status_message(f"⚠️ *Falha no Login Automático (07:00):* Não foi possível logar de forma automática via 2Captcha no convênio {convenio.upper()}. O robô foi encerrado.")
                     return
                 
                 # Tenta Sessão Remota (Link Remoto VNC)
                 link_remoto = start_remote_session()
                 if link_remoto:
-                    send_telegram_message(f"⚠️ *Falha no Login Automático!*\nO robô precisa de ajuda.\nAcesse o link abaixo para resolver o captcha e entrar:\n\n{link_remoto}")
+                    log_status_message(f"⚠️ *Falha no Login Automático!*\nO robô precisa de ajuda.\nAcesse o link abaixo para resolver o captcha e entrar:\n\n{link_remoto}")
                     print("[INFO] Aguardando login manual pelo link remoto...")
                     
                     for _ in range(120): # 10 minutos
                         if check_login_success(page):
                             print("[INFO] Login detectado via sessão remota!")
-                            send_telegram_message("✅ *Login efetuado com sucesso!* Retomando o robô...")
+                            log_status_message("✅ *Login efetuado com sucesso!* Retomando o robô...")
                             break
                         page.wait_for_timeout(5000)
                     else:
                         print("[ERRO] Tempo limite para login manual esgotado.")
-                        send_telegram_message("❌ *Tempo esgotado:* Ninguém resolveu o Captcha pelo link.")
+                        log_status_message("❌ *Tempo esgotado:* Ninguém resolveu o Captcha pelo link.")
                         stop_remote_session()
                         return
                     stop_remote_session()
                 else:
-                    send_telegram_message("❌ *Falha no Login Automático:* O robô não conseguiu acessar e o Link Remoto não está ativado.")
+                    log_status_message("❌ *Falha no Login Automático:* O robô não conseguiu acessar e o Link Remoto não está ativado.")
                     return
 
             print('[INFO] Login efetuado com sucesso!')
-            send_telegram_message(f"✅ *Login com Sucesso:* Conectado ao SafeConsig ({convenio.upper()}).")
+            log_status_message(f"✅ *Login com Sucesso:* Conectado ao SafeConsig ({convenio.upper()}).")
 
             colunas_extracao = ['Matricula', 'Margem Emprestimo', 'Margem Beneficio', 'Vinculo', 'Secretaria', 'Cargo']
 
@@ -382,8 +381,8 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                         f"- CPFs consultados hoje: {idx_cpf}"
                     )
                     print(f"[INFO] {msg_pause}")
-                    send_telegram_message(msg_pause)
-                    send_telegram_document(
+                    log_status_message(msg_pause)
+                    log_output_file(
                         temp_file, 
                         f"📊 *Progresso Parcial ({convenio.upper()} - {agora_br.strftime('%H:%M')})*"
                     )
@@ -391,7 +390,7 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
 
                 if stop.is_set():
                     print("[INFO] Interrupção (Ctrl+C) detectada.")
-                    send_telegram_message(f"⏳ *Execução Pausada:* O robô {convenio.upper()} foi interrompido e retomará de onde parou.")
+                    log_status_message(f"⏳ *Execução Pausada:* O robô {convenio.upper()} foi interrompido e retomará de onde parou.")
                     break
 
                 raw_cpf = str(cpf).strip().split('.')[0].split('-')[0]
@@ -628,9 +627,9 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                     except Exception as e:
                         print(f'[ERRO] Falha ao salvar progresso incremental: {e}')
 
-                # Telegram progress report a cada 500 CPFs
+                # Status a cada 500 CPFs
                 if (idx_cpf + 1) % 500 == 0:
-                    send_telegram_message(f"📈 *Status do Robô ({convenio.upper()}):*\n*Progresso:* {idx_cpf + 1}/{total_cpfs_to_process} CPFs consultados nesta rodada.")
+                    log_status_message(f"📈 *Status do Robô ({convenio.upper()}):*\n*Progresso:* {idx_cpf + 1}/{total_cpfs_to_process} CPFs consultados nesta rodada.")
 
             # Se completou o loop inteiro sem interromper
             else:
@@ -639,13 +638,13 @@ def run(config: dict, input_file: Path, temp_file: Path, output_file: Path, stop
                 df.to_excel(output_file, index=False)
                 if temp_file.exists():
                     temp_file.unlink()
-                send_telegram_message(f"✅ *Execução Concluída com Sucesso!* ({convenio.upper()})")
-                send_telegram_document(output_file, f"📊 *Resultados Finais — {convenio.upper()}*")
+                log_status_message(f"✅ *Execução Concluída com Sucesso!* ({convenio.upper()})")
+                log_output_file(output_file, f"📊 *Resultados Finais — {convenio.upper()}*")
 
         except Exception as e:
             print(f"[ERRO] Erro na execução geral: {e}")
             traceback.print_exc()
-            send_telegram_message(f"🚨 *Erro Crítico no Robô {convenio.upper()}:* {e}")
+            log_status_message(f"🚨 *Erro Crítico no Robô {convenio.upper()}:* {e}")
         finally:
             context.close()
 

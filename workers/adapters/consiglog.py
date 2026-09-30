@@ -119,6 +119,7 @@ class ConsiglogSession:
                 OutcomeKind.RETRYABLE_ERROR,
                 "O ConsigX retornou matrícula diferente da solicitada.",
                 code="consigx_registration_mismatch",
+                end_session=False,
             )
         person = {
             key: raw.get(key)
@@ -135,6 +136,9 @@ class ConsiglogSession:
             margins=margins,
             raw=raw,
         )
+
+    def recover(self) -> None:
+        self.page.reload(wait_until="domcontentloaded", timeout=20_000)
 
     def close(self) -> None:
         for resource_name in ("context", "browser"):
@@ -188,7 +192,7 @@ class ConsiglogAdapter:
                 code="consigx_timeout",
                 message="Tempo limite na consulta ConsigX.",
                 stage=stage,
-                end_session=True,
+                end_session=stage != "consultation",
                 raw={"Status_Robo": "Timeout"},
             )
         if isinstance(exc, ConsiglogResponseUnconfirmed):

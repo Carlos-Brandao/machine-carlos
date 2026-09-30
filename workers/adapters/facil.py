@@ -38,7 +38,9 @@ async def _login_without_side_effects(
     """Autentica sem Telegram/fallback manual e preserva erros do 2Captcha."""
 
     last_portal_error: Exception | None = None
-    for _attempt in range(3):
+    # One paid captcha/login per reserved access. Persistent backend policy
+    # enforces the cross-process limit instead of nested retry loops.
+    for _attempt in range(1):
         try:
             await page.goto(
                 base_url.rstrip("/") + "/",
@@ -158,6 +160,7 @@ class FacilSession:
                 OutcomeKind.RETRYABLE_ERROR,
                 "O FACILCONSIG retornou uma ficha sem o CPF solicitado.",
                 code="facil_cpf_mismatch",
+                end_session=False,
             )
 
         returned_registration_raw = next(
@@ -179,6 +182,7 @@ class FacilSession:
                 OutcomeKind.RETRYABLE_ERROR,
                 "O FACILCONSIG retornou uma ficha sem a matrícula solicitada.",
                 code="facil_registration_mismatch",
+                end_session=False,
             )
 
         person = {
@@ -204,6 +208,11 @@ class FacilSession:
             margins=margins,
             raw=raw,
         )
+
+    def recover(self) -> None:
+        # Reload retains cookies and session; _buscar_result validates the form
+        # on the next item. Never perform a speculative paid login here.
+        self.loop.run_until_complete(self.page.reload(wait_until="domcontentloaded", timeout=20_000))
 
     async def _close_async(self) -> None:
         if self.context is not None:
@@ -262,7 +271,7 @@ class FacilAdapter:
                 message=str(exc)[:500],
                 stage=stage,
                 retry_after_seconds=60,
-                end_session=True,
+                end_session=stage != "consultation",
             )
         if isinstance(exc, PlaywrightTimeoutError):
             return ExecutionOutcome.error(
@@ -271,7 +280,7 @@ class FacilAdapter:
                 code="facil_timeout",
                 message=str(exc)[:500] or "Tempo limite na consulta FACILCONSIG.",
                 stage=stage,
-                end_session=True,
+                end_session=stage != "consultation",
                 raw={"Status_Robo": "Timeout"},
             )
         if isinstance(exc, (PlaywrightError, OSError)):

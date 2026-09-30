@@ -33,13 +33,13 @@ SERVICE_KEYS: dict[str, set[str]] = {
         "ADMIN_PORT",
         "BACKEND_HOST",
         "BACKEND_PORT",
+        "WEBHOOK_ALLOWED_HOSTS",
         "BOOTSTRAP_ADMIN_EMAIL",
         "BOOTSTRAP_ADMIN_PASSWORD",
         # Necessário apenas durante a transição para o cofre do painel.
         "TWOCAPTCHA_API_KEY",
         "CONSIGX_HTTPS_PROXY",
         "SAFECONSIG_PROXY",
-        "TELEGRAM_BOT_TOKEN",
     },
     "worker": {
         "WORKER_API_URL",
@@ -52,27 +52,12 @@ SERVICE_KEYS: dict[str, set[str]] = {
         "CAPTCHA_DEBUG",
         "WORKER_PLATFORMS",
     },
-    "telegram": {
-        "TELEGRAM_BOT_TOKEN",
-        "TELEGRAM_ALLOWED_USER_IDS",
-        "BACKEND_API_URL",
-        "TELEGRAM_BACKEND_API_TOKEN",
-        # Fallback transitório aceito pelo controlador Telegram.
-        "BACKEND_API_TOKEN",
-    },
-    "notifications": COMMON_APP_KEYS
-    | {
-        "TELEGRAM_BOT_TOKEN",
-        "TELEGRAM_NOTIFICATION_CHAT_ID",
-        "TELEGRAM_CHAT_ID",
-        "TELEGRAM_ALLOWED_USER_IDS",
-    },
+    "scheduler": COMMON_APP_KEYS | {"WEBHOOK_ALLOWED_HOSTS"},
 }
 SERVICE_GROUPS = {
     "backend": "machine-backend",
     "worker": "machine-worker",
-    "telegram": "machine-telegram",
-    "notifications": "machine-notify",
+    "scheduler": "machine-backend",
 }
 PREFIX_KEYS: dict[str, tuple[str, ...]] = {
     "worker": ("WORKER_COUNT_",),

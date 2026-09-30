@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import secrets
 from typing import Any
 
 from sqlalchemy import (
@@ -139,6 +140,7 @@ class PortalCredential(TimestampMixin, Base):
     __tablename__ = "portal_credentials"
     __table_args__ = (
         UniqueConstraint("municipality_slug", "label", name="uq_portal_credentials_label"),
+        UniqueConstraint("municipality_slug", "login_identity", name="uq_portal_credentials_identity"),
         CheckConstraint(
             "status IN ('active', 'disabled', 'cooldown', 'invalid')",
             name="ck_portal_credentials_status",
@@ -158,6 +160,7 @@ class PortalCredential(TimestampMixin, Base):
     username_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     password_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     portal_username: Mapped[str | None] = mapped_column(Text)
+    login_identity: Mapped[str | None] = mapped_column(Text)
     portal_password: Mapped[str | None] = mapped_column(Text)
     # ``consignataria`` permanece durante a transição porque workers e telas
     # legados ainda o consomem. Novas regras usam ``portal_profile`` e só o
@@ -168,6 +171,7 @@ class PortalCredential(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     max_parallel_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    login_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
@@ -252,7 +256,7 @@ class Job(TimestampMixin, Base):
     __tablename__ = "automation_jobs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('awaiting_dataset', 'queued', 'running', 'paused', 'completed', 'completed_with_errors', 'blocked', 'failed', 'cancelled')",
+            "status IN ('awaiting_dataset', 'queued', 'running', 'pausing', 'paused', 'cancelling', 'completed', 'completed_with_errors', 'blocked', 'failed', 'cancelled')",
             name="ck_automation_jobs_status",
         ),
         CheckConstraint(
@@ -276,6 +280,9 @@ class Job(TimestampMixin, Base):
     )
     telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    selected_credential_ids: Mapped[list[int] | None] = mapped_column(JSONB)
+    max_parallel_accounts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    result_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # The longest valid state is ``completed_with_errors`` (21 characters).
     # Keep some headroom so adding another explicit workflow state does not
     # make the queue API fail while persisting a terminal job.
@@ -336,10 +343,12 @@ class JobItem(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     outcome: Mapped[str | None] = mapped_column(String(32))
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_owner: Mapped[str | None] = mapped_column(String(160))
+    lease_token: Mapped[str | None] = mapped_column(String(64))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -399,10 +408,11 @@ class CredentialLease(Base):
     credential_id: Mapped[int] = mapped_column(
         ForeignKey("portal_credentials.id", ondelete="CASCADE"), primary_key=True
     )
-    job_id: Mapped[int] = mapped_column(
-        ForeignKey("automation_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("automation_jobs.id", ondelete="CASCADE"), nullable=True, index=True
     )
     worker_id: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    lease_token: Mapped[str] = mapped_column(String(64), nullable=False, default=lambda: secrets.token_hex(32))
     acquired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -420,7 +430,7 @@ class WorkerHeartbeat(Base):
             name="ck_worker_heartbeats_health_status",
         ),
         CheckConstraint(
-            "activity_status IN ('starting', 'idle', 'busy', 'backoff', 'stopped')",
+            "activity_status IN ('starting', 'idle', 'busy', 'backoff', 'draining', 'stopped')",
             name="ck_worker_heartbeats_activity_status",
         ),
         Index(
@@ -566,3 +576,107 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
+
+
+class OperationalBlock(Base):
+    __tablename__ = "operational_blocks"
+    scope_type: Mapped[str] = mapped_column(String(20), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    blocked_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    message: Mapped[str | None] = mapped_column(Text)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class AccessCheck(Base):
+    __tablename__ = "portal_access_checks"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    credential_id: Mapped[int] = mapped_column(ForeignKey("portal_credentials.id", ondelete="RESTRICT"), nullable=False, index=True)
+    requested_by_id: Mapped[int | None] = mapped_column(ForeignKey("admin_users.id", ondelete="SET NULL"))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued", index=True)
+    worker_id: Mapped[str | None] = mapped_column(String(160))
+    lease_token: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class JobRequest(Base):
+    """Idempotência compartilhada pelo painel, API e agendamentos."""
+    __tablename__ = "job_requests"
+    namespace: Mapped[str] = mapped_column(String(120), primary_key=True)
+    request_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    job_id: Mapped[int] = mapped_column(ForeignKey("automation_jobs.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Schedule(TimestampMixin, Base):
+    __tablename__ = "consultation_schedules"
+    __table_args__ = (
+        CheckConstraint("max_parallel_accounts BETWEEN 1 AND 20", name="ck_schedules_accounts"),
+        Index("ix_schedules_due", "enabled", "next_run_at"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="RESTRICT"), nullable=False)
+    requested_by_id: Mapped[int | None] = mapped_column(ForeignKey("admin_users.id", ondelete="SET NULL"))
+    cron_expression: Mapped[str] = mapped_column(String(120), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="America/Fortaleza")
+    selected_credential_ids: Mapped[list[int] | None] = mapped_column(JSONB)
+    max_parallel_accounts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    misfire_grace_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ScheduleOccurrence(Base):
+    __tablename__ = "schedule_occurrences"
+    __table_args__ = (UniqueConstraint("schedule_id", "scheduled_for", name="uq_schedule_occurrence"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    schedule_id: Mapped[int] = mapped_column(ForeignKey("consultation_schedules.id", ondelete="CASCADE"), nullable=False, index=True)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("automation_jobs.id", ondelete="RESTRICT"))
+    message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ExportArtifact(TimestampMixin, Base):
+    __tablename__ = "export_artifacts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "result_version", "snapshot_hash", "format", name="uq_export_snapshot_format"),
+        Index("ix_export_artifacts_due", "status", "locked_until"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("automation_jobs.id", ondelete="RESTRICT"), nullable=False, index=True)
+    result_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    format: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    locked_by: Mapped[str | None] = mapped_column(String(64))
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WebhookEndpoint(TimestampMixin, Base):
+    __tablename__ = "webhook_endpoints"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    signing_secret_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

@@ -2,17 +2,9 @@
 
 from __future__ import annotations
 
-import sys
-import types
 import unittest
 from unittest.mock import patch
 
-
-# Keep the core scheduling tests runnable before optional runtime dependencies
-# are installed. Production uses the real requests package from requirements.txt.
-sys.modules.setdefault(
-    "requests", types.SimpleNamespace(RequestException=Exception, Session=object)
-)
 
 from services.database import require_postgres_url
 from services.registry import (
@@ -22,25 +14,7 @@ from services.registry import (
     runner_names,
 )
 from services.scheduling import is_within_window, platform_for
-from services.telegram import TelegramClient, TelegramNotifier
 from services.utils import mask_cpf
-
-
-class _Response:
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict[str, object]:
-        return {"ok": True, "result": {"id": 1}}
-
-
-class _Session:
-    def __init__(self) -> None:
-        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    def post(self, *args: object, **kwargs: object) -> _Response:
-        self.calls.append((args, kwargs))
-        return _Response()
 
 
 class ServiceTests(unittest.TestCase):
@@ -69,22 +43,6 @@ class ServiceTests(unittest.TestCase):
             clear=True,
         ):
             self.assertTrue(require_postgres_url().startswith("postgresql+psycopg://"))
-
-    def test_telegram_client_uses_one_api_adapter(self) -> None:
-        session = _Session()
-        client = TelegramClient("test-token", session)
-
-        self.assertEqual({"id": 1}, client.send_message(12, "ok"))
-        self.assertEqual(12, session.calls[0][1]["json"]["chat_id"])
-
-    def test_telegram_notifier_falls_back_to_allowed_user(self) -> None:
-        with patch("services.telegram.get_runtime_secret", return_value="test-token"):
-            with patch.dict(
-                "os.environ", {"TELEGRAM_ALLOWED_USER_IDS": "42"}, clear=True
-            ):
-                notifier = TelegramNotifier.from_environment()
-        self.assertTrue(notifier.enabled)
-        self.assertEqual(42, notifier.chat_id)
 
 if __name__ == "__main__":
     unittest.main()

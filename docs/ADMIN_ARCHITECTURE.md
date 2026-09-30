@@ -9,7 +9,7 @@
 3. **GenericWorker**: laço comum de execução.
 4. **Adapters**: RF1, FACILCONSIG e CONSIGX.
 5. **Notification worker**: entrega durável, com semântica at-least-once.
-6. **Telegram controller**: interface do usuário; não executa navegador.
+6. **Scheduler operacional**: agendas, manutenção, exportações e webhooks persistentes.
 
 ## Limites de responsabilidade
 
@@ -71,7 +71,7 @@ apenas um item.
 - credencial inválida: somente aquele acesso fica invalid;
 - portal ou integração indisponível: acesso entra em cooldown sem transformar
   o item em não encontrado;
-- Telegram fora: outbox tenta novamente sem afetar o job;
+- Webhook fora: outbox tenta novamente sem afetar a consulta;
 - alteração de seletor: adapter retorna retry, nunca not_found por silêncio.
 
 ## Segurança
@@ -83,7 +83,7 @@ Cache-Control no-store. Por decisão operacional, administradores podem conferir
 a senha de portal na tela de edição; tokens e segredos de integração continuam
 sem leitura no painel.
 
-Workers e Telegram não recebem DATABASE_URL nem APP_MASTER_KEY. Eles obtêm
+Workers não recebem DATABASE_URL nem APP_MASTER_KEY. Eles obtêm
 somente os segredos operacionais permitidos pelo próprio escopo em uma rota
 interna no-store; a rotação feita no painel é observada sem reiniciar o serviço.
 
@@ -94,7 +94,7 @@ Telas:
 - Visão geral: prontidão e jobs recentes;
 - Execuções: progresso e controles;
 - Eventos: diagnóstico;
-- Envios: Telegram e retry;
+- Envios: webhooks e retry;
 - Bases: importação e reutilização;
 - Robôs e regras: catálogo, entrada, agenda e capacidade;
 - Acessos aos portais: pool por convênio;

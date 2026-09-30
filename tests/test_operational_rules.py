@@ -26,12 +26,6 @@ from machine_admin.models import (
     NotificationOutbox,
     Platform,
 )
-from machine_admin.notifications import (
-    _mark_failure,
-    claim_notification,
-    deliver_notification,
-    enqueue_job_result,
-)
 from machine_admin.queue import (
     _apply_retry,
     _retry_delay,
@@ -287,7 +281,7 @@ class RetryPolicyTests(unittest.TestCase):
 
         exhausted = _apply_retry(
             item,
-            outcome="portal_unavailable",
+            outcome="retryable_error",
             error_code="timeout",
             error_message="Portal lento",
             retry_after_seconds=1,  # o backend impõe piso de segurança
@@ -295,7 +289,7 @@ class RetryPolicyTests(unittest.TestCase):
 
         self.assertFalse(exhausted)
         self.assertEqual("pending", item.status)
-        self.assertEqual("portal_unavailable", item.outcome)
+        self.assertEqual("retryable_error", item.outcome)
         self.assertIsNone(item.credential_id)
         self.assertIsNone(item.lease_owner)
         self.assertIsNone(item.lease_expires_at)
@@ -310,6 +304,7 @@ class RetryPolicyTests(unittest.TestCase):
             dataset_record_id=2,
             status="leased",
             attempts=3,
+            retry_count=2,
             max_attempts=3,
             lease_owner="worker-1",
         )
@@ -369,138 +364,12 @@ class ExecutionOutcomeTests(unittest.TestCase):
         self.assertEqual("timeout", retryable.to_payload()["error"]["code"])
 
 
-class OutboxSession:
-    def __init__(self, scalar_result=None) -> None:
-        self.scalar_result = scalar_result
-        self.statements: list[object] = []
-        self.added: list[object] = []
-        self.flushes = 0
-
-    def scalar(self, statement):
-        self.statements.append(statement)
-        return self.scalar_result
-
-    def add(self, value: object) -> None:
-        self.added.append(value)
-
-    def flush(self) -> None:
-        self.flushes += 1
-
-
-class NotificationOutboxTests(unittest.TestCase):
-    def test_enqueue_requires_explicit_recipient_and_is_idempotent(self) -> None:
-        no_recipient = Job(id=1, municipality_slug="boa-vista", status="completed")
-        self.assertIsNone(enqueue_job_result(OutboxSession(), no_recipient))  # type: ignore[arg-type]
-
-        finished = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
-        job = Job(
-            id=2,
-            municipality_slug="boa-vista",
-            status="completed",
-            telegram_chat_id=998877,
-            finished_at=finished,
-        )
-        session = OutboxSession()
-        created = enqueue_job_result(session, job)  # type: ignore[arg-type]
-
-        self.assertEqual("998877", created.recipient)
-        self.assertEqual("pending", created.status)
-        self.assertIn(":2:", created.deduplication_key)
-        self.assertEqual(
-            "2026-08-18_09-00-00_Boa_Vista_MargemConsultada.xlsx",
-            created.payload_json["filename"],
-        )
-        self.assertEqual([created], session.added)
-
-        session.scalar_result = created
-        same = enqueue_job_result(session, job)  # type: ignore[arg-type]
-        self.assertIs(created, same)
-        self.assertEqual([created], session.added)
-
-    def test_claim_is_atomic_and_ignores_delayed_or_exhausted_messages(self) -> None:
-        session = OutboxSession()
-        self.assertIsNone(claim_notification(session, worker_id="notify-1"))  # type: ignore[arg-type]
-        sql = str(session.statements[0].compile(dialect=postgresql.dialect()))
-
-        self.assertIn("notification_outbox.attempts < notification_outbox.max_attempts", sql)
-        self.assertIn("notification_outbox.next_attempt_at", sql)
-        self.assertIn("FOR UPDATE SKIP LOCKED", sql)
-
-    def test_failure_retries_with_backoff_and_stops_at_the_limit(self) -> None:
-        retrying = NotificationOutbox(
-            deduplication_key="retry",
-            channel="telegram",
-            status="processing",
-            payload_json={},
-            attempts=2,
-            max_attempts=5,
-            locked_by="notify-1",
-        )
-        before = datetime.now(UTC)
-        _mark_failure(retrying, RuntimeError("temporário"))
-        self.assertEqual("retry", retrying.status)
-        self.assertIsNone(retrying.locked_by)
-        self.assertGreaterEqual(retrying.next_attempt_at, before + timedelta(seconds=60))
-
-        exhausted = NotificationOutbox(
-            deduplication_key="failed",
-            channel="telegram",
-            status="processing",
-            payload_json={},
-            attempts=5,
-            max_attempts=5,
-        )
-        _mark_failure(exhausted, RuntimeError("definitivo"))
-        self.assertEqual("failed", exhausted.status)
-        self.assertIsNone(exhausted.next_attempt_at)
-
-    def test_successful_delivery_targets_only_the_job_recipient(self) -> None:
-        class FakeNotifier:
-            enabled = True
-
-            def __init__(self) -> None:
-                self.delivered = False
-                self.filename = ""
-
-            def document(self, path: Path, caption: str) -> bool:
-                self.filename = path.name
-                self.delivered = path.read_bytes() == b"xlsx" and "Resultado" in caption
-                return self.delivered
-
-        notification = NotificationOutbox(
-            id=9,
-            deduplication_key="send",
-            job_id=5,
-            channel="telegram",
-            recipient="123456",
-            status="processing",
-            payload_json={
-                "type": "job_result",
-                "filename": "../../resultado.xlsx",
-                "caption": "Resultado final",
-            },
-            attempts=1,
-            max_attempts=5,
-            locked_by="notify-1",
-        )
-        notifier = FakeNotifier()
-        session = OutboxSession()
-        with tempfile.TemporaryDirectory() as directory:
-            with (
-                patch("machine_admin.notifications.build_job_export", return_value=(b"xlsx", 1)),
-                patch("machine_admin.notifications.TelegramNotifier.for_chat", return_value=notifier) as for_chat,
-            ):
-                deliver_notification(
-                    session, settings_for(Path(directory)), notification  # type: ignore[arg-type]
-                )
-
-        for_chat.assert_called_once_with(123456)
-        self.assertTrue(notifier.delivered)
-        self.assertEqual("resultado.xlsx", notifier.filename)
-        self.assertEqual("sent", notification.status)
-        self.assertIsNotNone(notification.sent_at)
-        self.assertIsNone(notification.locked_by)
-        self.assertTrue(any(isinstance(value, JobEvent) for value in session.added))
+class RetiredIntegrationTests(unittest.TestCase):
+    def test_telegram_runtime_is_absent(self):
+        root = Path(__file__).resolve().parent.parent
+        for path in ("services/telegram.py", "services/telegram_bot.py",
+                     "run_telegram_bot.py", "deploy/machine-telegram.service"):
+            self.assertFalse((root / path).exists())
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ def configure_remote_secret_provider(
 ) -> None:
     """Configura uma fonte remota autenticada para processos sem acesso ao DB.
 
-    Workers e o controlador Telegram rodam com privilégio mínimo: eles não
+    Executors rodam com privilégio mínimo: eles não
     recebem ``DATABASE_URL`` nem ``APP_MASTER_KEY``. Nesses processos, o
     backend entrega apenas as chaves permitidas pelo escopo do token da API.
     Uma vez configurada, a fonte remota é autoritativa e falha fechada; usar

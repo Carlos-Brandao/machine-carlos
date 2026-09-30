@@ -148,7 +148,7 @@ class SafeConsigAdapterTests(unittest.TestCase):
                 )
                 self.assertEqual(OutcomeKind.RETRYABLE_ERROR, outcome.kind)
                 self.assertNotEqual(OutcomeKind.NOT_FOUND, outcome.kind)
-                self.assertTrue(outcome.end_session)
+                self.assertFalse(outcome.end_session)
 
     def test_turnstile_error_preserves_integration_category(self) -> None:
         adapter = SafeConsigAdapter()

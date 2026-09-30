@@ -18,6 +18,22 @@ from workers.engine import GenericWorker
 from workers.registry import ADAPTERS, create_adapter, default_worker_count
 
 
+def drain_excess_slots(
+    slot_stops: dict[int, threading.Event], desired: int,
+    *, preferred_slots: set[int] | None = None,
+) -> list[int]:
+    """Signal only the excess live slots, counting already draining slots once."""
+    active = sorted(
+        (slot for slot, event in slot_stops.items() if not event.is_set()),
+        key=lambda slot: (slot in (preferred_slots or set()), slot),
+        reverse=True,
+    )
+    drained = active[:max(0, len(active) - desired)]
+    for slot in drained:
+        slot_stops[slot].set()
+    return drained
+
+
 def main() -> None:
     load_dotenv(Path(__file__).parent / ".env")
     parser = argparse.ArgumentParser(description="Pool de workers Machine")
@@ -41,6 +57,7 @@ def main() -> None:
     stop_event = threading.Event()
     slot_stops: dict[int, threading.Event] = {}
     threads: dict[int, threading.Thread] = {}
+    workers: dict[int, GenericWorker] = {}
 
     def stop(*_: object) -> None:
         stop_event.set()
@@ -53,12 +70,14 @@ def main() -> None:
     identity = f"{socket.gethostname()}-{os.getpid()}"
 
     def run_slot(slot: int, slot_stop: threading.Event) -> None:
-        GenericWorker(
+        worker = GenericWorker(
             api=WorkerAPIClient(base_url, token),
             worker_id=f"{identity}-{slot}",
             stop_event=slot_stop,
             adapter=create_adapter(args.platform),
-        ).run_forever()
+        )
+        workers[slot] = worker
+        worker.run_forever()
 
     def start_slot(slot: int) -> None:
         slot_stop = threading.Event()
@@ -82,6 +101,7 @@ def main() -> None:
             thread.join()
             threads.pop(slot, None)
             slot_stops.pop(slot, None)
+            workers.pop(slot, None)
         if fixed_worker_count is None:
             try:
                 capacity = controller.request(
@@ -94,10 +114,8 @@ def main() -> None:
                 # preserve os slots existentes e tente novamente em seguida.
                 desired = len(threads) or min(default_worker_count(args.platform), 1)
                 logging.warning("Capacidade dinâmica indisponível: %s", exc)
-        for slot in sorted(threads, reverse=True):
-            if len(threads) <= desired:
-                break
-            slot_stops[slot].set()
+        preferred = {slot for slot, worker in tuple(workers.items()) if worker.available_to_drain}
+        drain_excess_slots(slot_stops, desired, preferred_slots=preferred)
         used_slots = set(threads)
         while len(threads) < desired:
             slot = next(number for number in range(1, 21) if number not in used_slots)
@@ -106,8 +124,10 @@ def main() -> None:
         stop_event.wait(30)
 
     stop()
+    # Non-daemon slots finish their current request and close the portal session
+    # before relinquishing the login. The service manager defines the hard cap.
     for thread in threads.values():
-        thread.join(timeout=30)
+        thread.join()
 
 
 if __name__ == "__main__":

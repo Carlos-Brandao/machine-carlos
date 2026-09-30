@@ -13,20 +13,13 @@
 <body>
   {% if user %}
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Ir para a visão geral"><span class="brand-mark">M</span><span>Central de Robôs</span></a>
+    <a class="brand" href="/admin/jobs" aria-label="Ir para consultas"><span class="brand-mark">M</span><span>Central de Consultas</span></a>
     <nav aria-label="Navegação principal">
-      <a class="{{ 'current' if request.url.path == '/' else '' }}" href="/">Visão geral</a>
-      <a class="{{ 'current' if request.url.path.startswith('/admin/jobs') else '' }}" href="/admin/jobs">Execuções</a>
-      <a class="{{ 'current' if request.url.path.startswith('/admin/logs') else '' }}" href="/admin/logs">Eventos</a>
-      <a class="{{ 'current' if request.url.path.startswith('/admin/notifications') else '' }}" href="/admin/notifications">Envios</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/jobs') or request.url.path.startswith('/admin/consultations') else '' }}" href="/admin/jobs">Consultas</a>
       <a class="{{ 'current' if request.url.path.startswith('/admin/datasets') else '' }}" href="/admin/datasets">Bases</a>
-      <a class="{{ 'current' if request.url.path.startswith('/admin/agreements') else '' }}" href="/admin/agreements">Robôs e regras</a>
-      <a class="{{ 'current' if request.url.path.startswith('/admin/credentials') else '' }}" href="/admin/credentials">Acessos aos portais</a>
-      {% if user.role == 'admin' %}
-      <a class="{{ 'current' if request.url.path.startswith('/admin/users') else '' }}" href="/admin/users">Usuários</a>
-      <a class="{{ 'current' if request.url.path.startswith('/admin/tokens') else '' }}" href="/admin/tokens">Tokens</a>
-      <a class="{{ 'current' if request.url.path.startswith('/admin/secrets') else '' }}" href="/admin/secrets">Integrações</a>
-      {% endif %}
+      <a class="{{ 'current' if request.url.path.startswith('/admin/credentials') else '' }}" href="/admin/credentials">Acessos</a>
+      <a class="{{ 'current' if request.url.path.startswith('/admin/schedules') else '' }}" href="/admin/schedules">Agendamentos</a>
+      <a class="{{ 'current' if request.url.path in ['/', '/admin/settings', '/admin/agreements', '/admin/users', '/admin/tokens', '/admin/secrets', '/admin/logs'] else '' }}" href="/admin/settings">Configurações</a>
     </nav>
     <div class="user-menu"><span><strong>{{ user.display_name }}</strong>{{ role_badge(user.role) }}</span>
     <form method="post" action="/logout">

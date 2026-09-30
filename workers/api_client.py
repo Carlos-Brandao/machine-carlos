@@ -20,6 +20,7 @@ class WorkerAPIClient:
         if not base_url or not token:
             raise ValueError("WORKER_API_URL e WORKER_API_TOKEN são obrigatórios.")
         self.base_url = base_url.rstrip("/")
+        self._token = token
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -28,10 +29,14 @@ class WorkerAPIClient:
             }
         )
 
+    def fork(self) -> "WorkerAPIClient":
+        """Independent HTTP session for heartbeat thread (Session is not thread-safe)."""
+        return WorkerAPIClient(self.base_url, self._token)
+
     def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         try:
             response = self.session.request(
-                method, f"{self.base_url}{path}", timeout=35, **kwargs
+                method, f"{self.base_url}{path}", timeout=kwargs.pop("timeout", 35), **kwargs
             )
         except requests.RequestException as exc:
             raise WorkerAPIError(

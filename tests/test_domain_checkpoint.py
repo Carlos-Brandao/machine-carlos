@@ -14,6 +14,7 @@ from machine_admin.models import (
     DatasetRecord,
     Municipality,
     Platform,
+    PortalCredential,
 )
 from machine_admin.services import (
     create_portal_credential,
@@ -42,6 +43,8 @@ class FakeSession:
         self.objects: dict[tuple[type[object], object], object] = {}
         self.records: list[object] = []
         self.commits = 0
+        self.refreshes = []
+        self.active_lease_credential_id = None
         for value in objects or []:
             self._remember(value)
 
@@ -65,6 +68,12 @@ class FakeSession:
 
     def flush(self) -> None:
         return None
+
+    def refresh(self, value, *, with_for_update=False):
+        self.refreshes.append((value, with_for_update))
+
+    def scalar(self, statement):
+        return self.active_lease_credential_id
 
     def commit(self) -> None:
         self.commits += 1
@@ -286,6 +295,19 @@ class DomainCheckpointTests(unittest.TestCase):
         self.assertEqual(0, credential.failure_count)
         self.assertIsNone(credential.last_error)
         self.assertEqual("operador-correto", credential.portal_username)
+        self.assertEqual([(credential, True)], session.refreshes)
+        self.assertEqual(0, credential.login_failure_count)
+
+    def test_account_in_use_cannot_be_edited_before_logout(self) -> None:
+        session = FakeSession()
+        session.active_lease_credential_id = 22
+        credential = PortalCredential(id=22, label="Original", status="active")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "está em uso"):
+                update_portal_credential(session, settings_for(Path(directory)),
+                    credential=credential, label="Edited", username="changed", password="changed")
+        self.assertEqual("Original", credential.label)
+        self.assertEqual([(credential, True)], session.refreshes)
 
     def test_portal_credential_field_lengths_are_validated_before_database(self) -> None:
         municipality = Municipality(
@@ -350,12 +372,19 @@ class DomainCheckpointTests(unittest.TestCase):
         self.assertIn("operational_status = 'draft' THEN 'testing'", migration)
 
     def test_new_operational_tables_and_columns_are_declared(self) -> None:
-        self.assertEqual(17, len(Base.metadata.tables))
+        self.assertEqual(24, len(Base.metadata.tables))
         self.assertIn("job_item_attempts", Base.metadata.tables)
         self.assertIn("worker_heartbeats", Base.metadata.tables)
         self.assertIn("notification_outbox", Base.metadata.tables)
         self.assertIn("outcome", Base.metadata.tables["job_items"].c)
         self.assertIn("found_items", Base.metadata.tables["automation_jobs"].c)
+        for table in ("operational_blocks", "portal_access_checks", "consultation_schedules",
+                      "schedule_occurrences", "job_requests", "export_artifacts"):
+            self.assertIn(table, Base.metadata.tables)
+        self.assertIn("lease_token", Base.metadata.tables["job_items"].c)
+        self.assertIn("retry_count", Base.metadata.tables["job_items"].c)
+        self.assertIn("lease_token", Base.metadata.tables["credential_leases"].c)
+        self.assertIn("selected_credential_ids", Base.metadata.tables["automation_jobs"].c)
 
 
 if __name__ == "__main__":
