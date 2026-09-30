@@ -115,7 +115,7 @@ def install_product_admin(app, settings, require_browser_user, page_context, val
         return JSONResponse(snapshot(session, get_job(session, job_id)), headers={"Cache-Control": "no-store"})
 
     @app.get("/admin/consultations/{job_id}/results")
-    def consultation_results(job_id: int, request: Request, after_id: int = 0, limit: int = 25, outcome: str | None = None, session: Session = Depends(get_db)):
+    def consultation_results(job_id: int, request: Request, cursor: str | None = None, limit: int = 25, outcome: str | None = None, session: Session = Depends(get_db)):
         from machine_admin.operations import result_page
 
         user = require_browser_user(request, session)
@@ -123,7 +123,7 @@ def install_product_admin(app, settings, require_browser_user, page_context, val
             return JSONResponse({"detail": "Sua sessão expirou. Entre novamente."}, status_code=401)
         get_job(session, job_id)
         try:
-            data = result_page(session, settings, job_id, after_id=max(0, after_id), limit=max(1, min(limit, 100)), outcome=outcome)
+            data = result_page(session, settings, job_id, cursor=cursor, newest_first=True, limit=max(1, min(limit, 100)), outcome=outcome)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return JSONResponse(data, headers={"Cache-Control": "no-store"})

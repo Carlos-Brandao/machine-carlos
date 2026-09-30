@@ -75,9 +75,10 @@ class AdminSmoke(TestCase):
         self.assertNotIn('password',response.text)
     def test_results_pagination_and_bad_filter(self):
         with patch('machine_admin.operations.result_page',return_value={'items':[],'next_cursor':None}) as results:
-            response=self.client.get('/admin/consultations/4/results?after_id=10&outcome=found',headers={'x-test-role':'viewer'})
+            response=self.client.get('/admin/consultations/4/results?cursor=opaque-page&outcome=found',headers={'x-test-role':'viewer'})
         self.assertEqual(200,response.status_code)
-        self.assertEqual(10,results.call_args.kwargs['after_id'])
+        self.assertEqual('opaque-page',results.call_args.kwargs['cursor'])
+        self.assertTrue(results.call_args.kwargs['newest_first'])
         with patch('machine_admin.operations.result_page',side_effect=ValueError('bad filter')):
             response=self.client.get('/admin/consultations/4/results?outcome=bad',headers={'x-test-role':'viewer'})
         self.assertEqual(400,response.status_code)

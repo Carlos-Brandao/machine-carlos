@@ -19,8 +19,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 from machine_admin.config import Settings
 from machine_admin.db import get_db
-from machine_admin.models import AdminUser, ApiToken, Base, ConsultationResult, Dataset, DatasetRecord, ExportArtifact, Job, JobItem, Municipality, NotificationOutbox, Platform, PortalCredential, Schedule, ScheduleOccurrence
-from machine_admin.operations import create_execution
+from machine_admin.models import AdminUser, ApiToken, Base, ConsultationResult, Dataset, DatasetRecord, ExportArtifact, Job, JobItem, JobItemAttempt, Municipality, NotificationOutbox, Platform, PortalCredential, Schedule, ScheduleOccurrence
+from machine_admin.operations import create_execution, result_page
 from machine_admin.product_api import install_product_routes
 from machine_admin.product_exports import process_one_export, read_export, request_export
 from machine_admin.scheduling import create_schedule, process_due_schedules
@@ -170,6 +170,66 @@ class ProductPostgresAcceptance(unittest.TestCase):
             self.assertEqual(1, second["count"])
             self.assertIsNone(second["next_cursor"])
             self.assertEqual(403, client.get("/api/v1/schedules", headers=headers).status_code)
+
+    def test_admin_returns_newest_completion_first_with_stable_cursor(self):
+        dataset, owner, accounts, _ = self.seed(count=6)
+        job_id = self.create(dataset, owner, accounts)
+        now = datetime.now(UTC)
+        cipher = SecretCipher(self.settings.master_key)
+        with self.factory() as s, s.begin():
+            rows = list(s.scalars(select(JobItem).where(JobItem.job_id == job_id).order_by(JobItem.id)))
+            ids = [item.id for item in rows]
+            # The first imported item completed latest; IDs must not set order.
+            for index, age in ((0, 0), (1, 10), (2, 10)):
+                item = rows[index]
+                item.status, item.outcome, item.attempts = 'completed', 'found', 1
+                s.add(ConsultationResult(job_item_id=item.id, status='found', attempt_number=1,
+                    consulted_at=now-timedelta(seconds=age), result_ciphertext=cipher.encrypt('{}', context=f'result:{item.id}')))
+            # Recoverable error has no result row, and began well before it ended.
+            failed = rows[3]
+            failed.outcome, failed.attempts = 'retryable_error', 1
+            failed.last_attempt_at = now-timedelta(minutes=20)
+            s.add(JobItemAttempt(job_item_id=failed.id, attempt_number=1, status='retryable_error',
+                started_at=failed.last_attempt_at, finished_at=now-timedelta(seconds=5)))
+            # Superseded results must not use their misleading newer timestamp.
+            stale = rows[4]
+            stale.attempts = 2
+            stale.last_attempt_at = now-timedelta(seconds=20)
+            s.add(ConsultationResult(job_item_id=stale.id, status='found', attempt_number=1,
+                consulted_at=now+timedelta(days=1), superseded_at=now,
+                result_ciphertext=cipher.encrypt('{}', context=f'result:{stale.id}')))
+            # Last item has never been queried: null dates sort last.
+        with self.factory() as s:
+            first = result_page(s, self.settings, job_id, newest_first=True, limit=2)
+            self.assertEqual([ids[0], ids[3]], [item['id'] for item in first['items']])
+            self.assertEqual((now-timedelta(seconds=5)).isoformat(), first['items'][1]['returned_at'])
+            second = result_page(s, self.settings, job_id, newest_first=True, limit=2, cursor=first['next_cursor'])
+            self.assertEqual([ids[2], ids[1]], [item['id'] for item in second['items']])
+            third = result_page(s, self.settings, job_id, newest_first=True, limit=1, cursor=second['next_cursor'])
+            self.assertEqual([ids[4]], [item['id'] for item in third['items']])
+            last = result_page(s, self.settings, job_id, newest_first=True, limit=1, cursor=third['next_cursor'])
+            self.assertEqual([ids[5]], [item['id'] for item in last['items']])
+            self.assertIsNone(last['next_cursor'])
+            tied = result_page(s, self.settings, job_id, newest_first=True, limit=3)
+            tied_next = result_page(s, self.settings, job_id, newest_first=True, limit=1, cursor=tied['next_cursor'])
+            self.assertEqual(ids[1], tied_next['items'][0]['id'])
+            found = result_page(s, self.settings, job_id, newest_first=True, outcome='found')
+            self.assertEqual([ids[0], ids[2], ids[1]], [item['id'] for item in found['items']])
+            ascending = result_page(s, self.settings, job_id)
+            self.assertEqual(ids, [item['id'] for item in ascending['items']])
+            for cursor in ('not-a-cursor', first['next_cursor']):
+                with self.assertRaises(ValueError):
+                    result_page(s, self.settings, job_id+1, newest_first=True, cursor=cursor)
+
+    def test_admin_returns_without_dates_paginate_without_duplicates(self):
+        dataset, owner, accounts, _ = self.seed(count=3)
+        job_id = self.create(dataset, owner, accounts)
+        with self.factory() as s:
+            ids = list(s.scalars(select(JobItem.id).where(JobItem.job_id == job_id).order_by(JobItem.id.desc())))
+            first = result_page(s, self.settings, job_id, newest_first=True, limit=1)
+            second = result_page(s, self.settings, job_id, newest_first=True, limit=2, cursor=first['next_cursor'])
+            self.assertEqual(ids, [item['id'] for item in first['items']+second['items']])
+            self.assertIsNone(second['next_cursor'])
 
     def test_webhook_outbox_deduplicates_signs_and_recovers_last_attempt_crash(self):
         dataset, owner, accounts, _ = self.seed()

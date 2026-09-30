@@ -40,7 +40,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .event-timeline time { color: var(--muted); }
 .result-list { display: grid; gap: 8px; margin-bottom: 15px; }
 .result-item { padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; }
-.result-item summary { display: flex; justify-content: space-between; gap: 15px; cursor: pointer; }
+.result-item summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 15px; cursor: pointer; }
+.result-item summary time { color: var(--muted); font-size: .85em; }
 .result-item pre { max-height: 420px; overflow: auto; padding: 14px; background: var(--surface-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
 .api-example { overflow: auto; padding: 16px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 8px; }
 .credential-actions { display: grid; gap: 6px; }

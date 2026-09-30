@@ -232,7 +232,7 @@
     status.textContent = "Atualizando resultados…";
     try {
       var outcome = monitor.querySelector("[data-result-outcome]").value;
-      var data = await json(base + "/results?limit=25&after_id=" + (reset ? 0 : resultCursor) + (outcome ? "&outcome=" + encodeURIComponent(outcome) : ""));
+      var data = await json(base + "/results?limit=25" + (!reset && resultCursor ? "&cursor=" + encodeURIComponent(resultCursor) : "") + (outcome ? "&outcome=" + encodeURIComponent(outcome) : ""));
       var items = data.items || data.results || [];
       if (reset) list.replaceChildren();
       items.forEach(function (item) {
@@ -240,14 +240,15 @@
         var cpf = item.cpf || (result.requested && result.requested.cpf) || (result.confirmed && result.confirmed.cpf) || (item.cpf_last4 ? "***" + item.cpf_last4 : "Registro " + (item.item_id || item.id));
         var details = el("details", undefined, "result-item");
         var heading = el("summary"); heading.append(el("strong", cpf), el("span", labels[item.outcome || item.status] || item.outcome || item.status || "Resposta"));
+        if (item.returned_at || item.consulted_at) heading.append(el("time", date(item.returned_at || item.consulted_at)));
         details.append(heading);
         if (item.error_message) details.append(el("p", item.error_message, "inline-warning"));
         details.append(el("pre", JSON.stringify(item, null, 2))); list.append(details);
       });
       if (!list.children.length) list.append(el("p", "Nenhum retorno para este filtro. A consulta pode estar aguardando login ou o primeiro registro.", "muted"));
-      resultCursor = data.next_after_id || data.next_cursor || 0;
+      resultCursor = data.next_cursor || 0;
       monitor.querySelector("[data-results-next]").hidden = !resultCursor;
-      status.textContent = items.length + " retorno(s) nesta página.";
+      status.textContent = "Mais recentes primeiro · " + items.length + " retorno(s) nesta página.";
       resultLoaded = true; lastResultRefresh = Date.now();
     } catch (error) { status.textContent = error.name === "AbortError" ? "A atualização demorou mais que o esperado. Tente novamente." : error.message; }
     finally { resultBusy = false; }
