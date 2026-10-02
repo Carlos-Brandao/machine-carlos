@@ -1,6 +1,7 @@
 """HTTP regressions for typed complements, permissions, and safe rollback."""
 import base64
 import json
+from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -14,6 +15,38 @@ from machine_admin.config import Settings
 from machine_admin.db import get_db
 from machine_admin.models import AdminUser, ApiToken, Dataset, Municipality, Platform
 from machine_admin.web import create_app
+
+
+class DatasetEditorHTML(HTMLParser):
+    """Read form semantics without coupling assertions to layout classes."""
+
+    def __init__(self):
+        super().__init__()
+        self.forms = []
+        self.labels = []
+        self.current_form = None
+        self.current_label = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.current_form = {"attrs": attrs, "controls": []}
+            self.forms.append(self.current_form)
+        elif tag == "label":
+            self.current_label = {"attrs": attrs, "text": ""}
+            self.labels.append(self.current_label)
+        elif tag in {"input", "select", "button"} and self.current_form is not None:
+            self.current_form["controls"].append({"tag": tag, "attrs": attrs, "label": self.current_label})
+
+    def handle_data(self, data):
+        if self.current_label is not None:
+            self.current_label["text"] += data
+
+    def handle_endtag(self, tag):
+        if tag == "label":
+            self.current_label = None
+        elif tag == "form":
+            self.current_form = None
 
 
 class DatasetAdminTests(unittest.TestCase):
@@ -151,6 +184,40 @@ class DatasetAdminTests(unittest.TestCase):
         self.assertIn('href="/admin/consultations/new?dataset_id=2">Iniciar consulta</a>', response.text)
         self.assertEqual("no-store", response.headers["cache-control"])
         self.assertEqual(2, loader.call_args.kwargs["page"])
+
+    def test_editor_preserves_accessible_fields_csrf_and_save_action(self):
+        page = {"items": [], "page": 1, "limit": 50, "total": 4, "has_next": False}
+        with patch("machine_admin.web.dataset_record_page", return_value=page):
+            response = self.client.get("/admin/datasets/2")
+        self.assertEqual(200, response.status_code, response.text)
+        markup = DatasetEditorHTML()
+        markup.feed(response.text)
+        edit = next(form for form in markup.forms if form["attrs"].get("action") == "/admin/datasets/2/edit")
+        remove = next(form for form in markup.forms if form["attrs"].get("action") == "/admin/datasets/2/remove")
+        for form in (edit, remove):
+            self.assertEqual("post", form["attrs"].get("method"))
+            csrf = next(control for control in form["controls"] if control["attrs"].get("name") == "csrf")
+            self.assertEqual("hidden", csrf["attrs"].get("type"))
+            self.assertEqual("valid", csrf["attrs"].get("value"))
+        name = next(control for control in edit["controls"] if control["attrs"].get("name") == "display_name")
+        kind = next(control for control in edit["controls"] if control["attrs"].get("name") == "dataset_type")
+        municipality = next(control for control in edit["controls"] if "readonly" in control["attrs"])
+        self.assertEqual("input", name["tag"])
+        self.assertEqual("select", kind["tag"])
+        self.assertIn("required", name["attrs"])
+        self.assertIn("required", kind["attrs"])
+        self.assertEqual("Test", municipality["attrs"].get("value"))
+        for control, expected_label in ((name, "Nome da base"), (kind, "Tipo"), (municipality, "Convênio")):
+            label = control["label"] or next((label for label in markup.labels if control["attrs"].get("id") and label["attrs"].get("for") == control["attrs"]["id"]), None)
+            self.assertIsNotNone(label, f"Campo sem rótulo acessível: {expected_label}")
+            self.assertIn(expected_label, label["text"])
+        self.assertTrue(any(control["tag"] == "button" and control["attrs"].get("type") == "submit" for control in edit["controls"]))
+        with patch("machine_admin.web.update_dataset", return_value=self.dataset) as update:
+            response = self.client.post("/admin/datasets/2/edit", data={"display_name": "Nome atualizado", "dataset_type": "efetivos", "csrf": "valid"}, follow_redirects=False)
+        self.assertEqual(303, response.status_code)
+        self.assertEqual("/admin/datasets/2", response.headers["location"])
+        self.assertEqual("Nome atualizado", update.call_args.kwargs["display_name"])
+        self.assertEqual("efetivos", update.call_args.kwargs["dataset_type"])
 
     def test_failed_commit_only_cleans_new_blob(self):
         with TemporaryDirectory() as directory:
