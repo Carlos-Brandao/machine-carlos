@@ -34,7 +34,8 @@ O adapter não conhece banco, agenda, Excel, Telegram ou retry.
 - platforms representam processadoras;
 - municipalities representam convênios;
 - portal_credentials são acessos vinculados ao convênio;
-- datasets e dataset_records formam bases reutilizáveis;
+- datasets identifica uma base ativa por convênio/tipo; dataset_memberships
+  relaciona seu conteúdo a dataset_records imutáveis e permite a união Geral;
 - automation_jobs e job_items formam a execução;
 - job_item_attempts preserva cada tentativa;
 - credential_leases impede sessão duplicada;

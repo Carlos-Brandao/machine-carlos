@@ -10,6 +10,7 @@ from machine_admin.config import Settings
 from machine_admin.datasets import import_dataset, normalize_cpf
 from machine_admin.models import (
     Base,
+    CredentialLease,
     Dataset,
     DatasetRecord,
     Municipality,
@@ -22,6 +23,7 @@ from machine_admin.services import (
     update_portal_credential,
 )
 from services.registry import MUNICIPALITIES
+from tests.dataset_test_support import DatasetImportQueries
 
 
 def settings_for(storage_dir: Path) -> Settings:
@@ -38,7 +40,7 @@ def settings_for(storage_dir: Path) -> Settings:
     )
 
 
-class FakeSession:
+class FakeSession(DatasetImportQueries):
     def __init__(self, objects: list[object] | None = None) -> None:
         self.objects: dict[tuple[type[object], object], object] = {}
         self.records: list[object] = []
@@ -57,8 +59,7 @@ class FakeSession:
         return self.objects.get((model, key))
 
     def add(self, value: object) -> None:
-        if isinstance(value, Dataset) and value.id is None:
-            value.id = 1
+        self.assign_record_id(value)
         self.records.append(value)
         self._remember(value)
 
@@ -73,7 +74,9 @@ class FakeSession:
         self.refreshes.append((value, with_for_update))
 
     def scalar(self, statement):
-        return self.active_lease_credential_id
+        if statement.column_descriptions[0].get("entity") is CredentialLease:
+            return self.active_lease_credential_id
+        return super().scalar(statement)
 
     def commit(self) -> None:
         self.commits += 1
@@ -89,7 +92,8 @@ class DomainCheckpointTests(unittest.TestCase):
 
     def test_default_duplicate_policy_keeps_first_logical_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            session = FakeSession()
+            session = FakeSession([Municipality(slug="paulista", name="Paulista",
+                input_schema=MUNICIPALITIES["paulista"].input_schema)])
             dataset = import_dataset(
                 session,
                 settings_for(Path(directory)),
@@ -110,37 +114,31 @@ class DomainCheckpointTests(unittest.TestCase):
             self.assertEqual("consulta_agosto", dataset.display_name)
             self.assertEqual("keep_first", dataset.duplicate_policy)
             self.assertEqual(1, dataset.metadata_json["duplicate_row_count"])
-            self.assertIn("duplicata(s) ignorada(s)", dataset.error_message or "")
+            self.assertIn("repetida(s) no arquivo foram ignoradas", dataset.error_message or "")
 
-    def test_duplicate_policy_can_reject_or_keep_all(self) -> None:
+    def test_legacy_duplicate_policy_cannot_bypass_add_only_semantics(self) -> None:
         payload = b"CPF,MATRICULA\n52998224725,ABC\n52998224725,ABC\n"
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(ValueError, "duplicado"):
-                import_dataset(
-                    FakeSession(),
+        for legacy_policy in ("reject", "keep_all"):
+            with self.subTest(policy=legacy_policy), tempfile.TemporaryDirectory() as directory:
+                session = FakeSession([Municipality(slug="paulista", name="Paulista",
+                    input_schema=MUNICIPALITIES["paulista"].input_schema)])
+                dataset = import_dataset(
+                    session,
                     settings_for(Path(directory)),
                     municipality_slug="paulista",
-                    filename="rejeitada.csv",
+                    filename="historica.csv",
                     payload=payload,
                     uploaded_by_id=1,
-                    duplicate_policy="reject",
+                    duplicate_policy=legacy_policy,
+                    display_name="Base histórica",
+                    metadata={"source": "legacy"},
                 )
-
-        with tempfile.TemporaryDirectory() as directory:
-            dataset = import_dataset(
-                FakeSession(),
-                settings_for(Path(directory)),
-                municipality_slug="paulista",
-                filename="historica.csv",
-                payload=payload,
-                uploaded_by_id=1,
-                duplicate_policy="keep_all",
-                display_name="Base histórica",
-                metadata={"source": "legacy"},
-            )
-            self.assertEqual(2, dataset.row_count)
-            self.assertEqual("Base histórica", dataset.display_name)
-            self.assertEqual("legacy", dataset.metadata_json["source"])
+                self.assertEqual(1, dataset.row_count)
+                self.assertEqual(1, len([row for row in session.records if isinstance(row, DatasetRecord)]))
+                self.assertEqual("keep_first", dataset.duplicate_policy)
+                self.assertEqual(1, dataset.metadata_json["duplicate_row_count"])
+                self.assertEqual("Base histórica", dataset.display_name)
+                self.assertEqual("legacy", dataset.metadata_json["source"])
 
     def test_agreement_input_schema_controls_registration_and_duplicate_key(self) -> None:
         paulista = Municipality(
@@ -372,7 +370,9 @@ class DomainCheckpointTests(unittest.TestCase):
         self.assertIn("operational_status = 'draft' THEN 'testing'", migration)
 
     def test_new_operational_tables_and_columns_are_declared(self) -> None:
-        self.assertEqual(24, len(Base.metadata.tables))
+        self.assertEqual(25, len(Base.metadata.tables))
+        self.assertIn("dataset_memberships", Base.metadata.tables)
+        self.assertIn("dataset_type", Base.metadata.tables["datasets"].c)
         self.assertIn("job_item_attempts", Base.metadata.tables)
         self.assertIn("worker_heartbeats", Base.metadata.tables)
         self.assertIn("notification_outbox", Base.metadata.tables)

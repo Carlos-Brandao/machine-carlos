@@ -12,7 +12,8 @@ divergência tratada como defeito.
   Itabuna. Sempre pertence a exatamente uma processadora.
 - **Acesso ao portal**: usuário e senha de um convênio. Um acesso representa no
   máximo uma sessão simultânea.
-- **Base**: arquivo importado e reutilizável, sempre vinculado a um convênio.
+- **Base**: coleção reutilizável de registros de um convênio e de um tipo.
+  Um arquivo importado cria ou complementa essa coleção.
 - **Job**: execução de uma base por um convênio.
 - **Item**: uma linha consultável do job.
 - **Worker**: executor genérico; ele não decide agenda, retry ou prontidão.
@@ -65,18 +66,30 @@ O painel mostra a causa e a próxima ação de cada bloqueio.
 - Cada convênio informa se matrícula é obrigatória.
 - Colunas adicionais são preservadas como dados de origem, sem criar colunas
   físicas no PostgreSQL.
-- Uma base pertence a um único convênio, recebe nome amigável e pode iniciar
-  vários jobs ao longo do tempo.
+- O upload informa nome, convênio e tipo: Efetivos, Temporários, Comissionados
+  ou Geral. Existe no máximo uma base ativa por convênio e tipo.
+- Ao importar novamente para o mesmo convênio e tipo, a base conserva seu ID
+  e nome. Somente registros ainda ausentes são acrescentados; os anteriores
+  não são sobrescritos. O painel informa quantos foram acrescentados e ignorados.
+- Cada importação específica também acrescenta os registros ausentes à Geral.
+  A Geral é a união das bases específicas e dos registros enviados diretamente
+  para ela, sem repetição da chave lógica.
+- A chave lógica pertence ao convênio: CPF ou CPF + matrícula. CPF igual com
+  matrícula diferente é um vínculo distinto quando o convênio usa os dois campos.
+- Nome e tipo podem ser editados; um tipo já ocupado não pode receber outra
+  base ativa. O convênio de uma base permanece fixo.
+- Remover retira a base do catálogo ativo e desativa suas agendas, preservando
+  registros, jobs e resultados históricos. Remover uma base específica mantém
+  seus registros na Geral. Para remover a Geral, remova antes as específicas.
+- Jobs recebem uma lista fixa dos registros existentes na criação. Complementar
+  uma base não altera jobs já criados; a próxima execução usa a base atualizada.
+- Bases anteriores à migração permanecem sem classificação, com seus IDs,
+  registros e vínculos preservados. A opção Editar permite atribuir um tipo
+  explicitamente; novos uploads sempre exigem tipo.
 
-Políticas de duplicidade:
-
-- keep_first: mantém a primeira ocorrência da chave lógica;
-- keep_all: mantém todas;
-- reject: rejeita a importação se houver repetição.
-
-A chave lógica também pertence ao convênio: CPF ou CPF + matrícula. Bases
-anteriores à migration preservam keep_all; novas bases usam keep_first por
-padrão.
+O cadastro de acessos solicita apenas convênio, identificação, usuário e senha.
+A processadora é obtida do convênio; não há campo separado de consignatária.
+Seleções internas já usadas pelos adaptadores de portais são preservadas.
 
 ## Jobs e controles
 

@@ -19,7 +19,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 from machine_admin.config import Settings
 from machine_admin.db import get_db
-from machine_admin.models import AdminUser, ApiToken, Base, ConsultationResult, Dataset, DatasetRecord, ExportArtifact, Job, JobItem, JobItemAttempt, Municipality, NotificationOutbox, Platform, PortalCredential, Schedule, ScheduleOccurrence
+from machine_admin.datasets import archive_dataset, lock_dataset_catalog
+from machine_admin.models import AdminUser, ApiToken, Base, ConsultationResult, Dataset, DatasetMembership, DatasetRecord, ExportArtifact, Job, JobItem, JobItemAttempt, Municipality, NotificationOutbox, Platform, PortalCredential, Schedule, ScheduleOccurrence
 from machine_admin.operations import create_execution, result_page
 from machine_admin.product_api import install_product_routes
 from machine_admin.product_exports import process_one_export, read_export, request_export
@@ -72,7 +73,10 @@ class ProductPostgresAcceptance(unittest.TestCase):
             s.flush()
             for index in range(count):
                 context = secrets.token_hex(16)
-                s.add(DatasetRecord(dataset_id=dataset.id, row_number=index+2, encryption_context=context, cpf_ciphertext=cipher.encrypt("00123456797", context=f"record:{context}:cpf"), cpf_fingerprint=secrets.token_hex(32), cpf_last4="6797", source_ciphertext=cipher.encrypt(json.dumps({"CPF": "00123456797", "MATRICULA": str(index)}), context=f"record:{context}:source")))
+                record = DatasetRecord(dataset_id=dataset.id, row_number=index+2, encryption_context=context, cpf_ciphertext=cipher.encrypt("00123456797", context=f"record:{context}:cpf"), cpf_fingerprint=secrets.token_hex(32), cpf_last4="6797", source_ciphertext=cipher.encrypt(json.dumps({"CPF": "00123456797", "MATRICULA": str(index)}), context=f"record:{context}:source"))
+                s.add(record)
+                s.flush()
+                s.add(DatasetMembership(dataset_id=dataset.id, dataset_record_id=record.id, identity_key=f"legacy:{record.id}"))
             return dataset.id, user.id, [c.id for c in credentials], [token.id for token in tokens]
 
     def create(self, dataset, owner, accounts, key=None):
@@ -111,6 +115,31 @@ class ProductPostgresAcceptance(unittest.TestCase):
             occurrence = s.scalar(select(ScheduleOccurrence).where(ScheduleOccurrence.schedule_id == schedule_id).order_by(ScheduleOccurrence.id.desc()))
             self.assertEqual("skipped_late", occurrence.status)
             self.assertGreater(s.get(Schedule, schedule_id).next_run_at, now + timedelta(days=3))
+
+    def test_scheduler_defers_busy_catalog_without_consuming_due_occurrence(self):
+        dataset, owner, accounts, _ = self.seed()
+        now = datetime.now(UTC).replace(second=0, microsecond=0)
+        with self.factory() as s, s.begin():
+            schedule = create_schedule(s, name="Before archive", dataset_id=dataset,
+                requested_by_id=owner, selected_credential_ids=accounts,
+                max_parallel_accounts=2, cron_expression="* * * * *")
+            schedule.next_run_at = now
+            schedule_id = schedule.id
+        def tick():
+            with self.factory() as s, s.begin():
+                return process_due_schedules(s, now=now)
+        with self.factory() as editing, editing.begin():
+            base = editing.get(Dataset, dataset)
+            lock_dataset_catalog(editing, base.municipality_slug)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                self.assertEqual(0, pool.submit(tick).result(timeout=3))
+            with self.factory() as check:
+                self.assertEqual(now, check.get(Schedule, schedule_id).next_run_at)
+                self.assertEqual(0, check.scalar(select(func.count()).select_from(ScheduleOccurrence).where(ScheduleOccurrence.schedule_id == schedule_id)))
+            archive_dataset(editing, dataset=base)
+        self.assertEqual(0, tick())
+        with self.factory() as s:
+            self.assertFalse(s.get(Schedule, schedule_id).enabled)
 
     def test_export_snapshot_survives_changed_results_and_download_checksum(self):
         dataset, owner, accounts, _ = self.seed(1)

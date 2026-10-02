@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -26,7 +26,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from machine_admin.config import Settings
-from machine_admin.datasets import create_job_for_dataset, delete_dataset_blob, import_dataset
+from machine_admin.datasets import (
+    DATASET_TYPES, archive_dataset, cleanup_import_blob, create_job_for_dataset,
+    import_dataset, lock_dataset_catalog, update_dataset,
+)
+from machine_admin.dataset_views import dataset_record_page, import_summary
 from machine_admin.db import get_db, get_session_factory, get_settings
 from machine_admin.models import (
     AccessCheck,
@@ -846,6 +850,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:
                 optional.append("registration")
 
+            lock_dataset_catalog(session, municipality_slug)
+            session.refresh(municipality)
+            current_identity_fields = {
+                str(field).strip().lower()
+                for field in (municipality.input_schema or {}).get(
+                    "deduplication_key", ["cpf", "registration"]
+                )
+            }
+            if current_identity_fields != set(duplicate_key) and session.scalar(
+                select(Dataset.id).where(
+                    Dataset.municipality_slug == municipality_slug,
+                    Dataset.dataset_type.is_not(None),
+                    Dataset.status != "archived",
+                ).limit(1)
+            ) is not None:
+                raise ValueError(
+                    "Há bases classificadas ativas neste convênio. Mantenha a regra de CPF/matrícula "
+                    "atual ou remova essas bases antes de alterar a regra e importar novamente."
+                )
+
             municipality.name = cleaned_name[:160]
             municipality.enabled = enabled == "on"
             municipality.operational_status = operational_status
@@ -1241,7 +1265,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/admin/credentials/{credential_id}/edit")
-    def edit_credential(credential_id: int, request: Request, label: str = Form(...), username: str = Form(""), password: str = Form(""), consignataria: str = Form(""), csrf: str = Form(...), session: Session = Depends(get_db)):
+    def edit_credential(credential_id: int, request: Request, label: str = Form(...), username: str = Form(""), password: str = Form(""), csrf: str = Form(...), session: Session = Depends(get_db)):
         user = require_browser_user(request, session, admin_only=True)
         if isinstance(user, RedirectResponse):
             return user
@@ -1257,7 +1281,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 label=label,
                 username=username,
                 password=password,
-                portal_profile=consignataria,
             )
             audit(session, actor_id=user.id, action="portal_credential.updated", target_type="portal_credential", target_id=str(credential.id), ip_address=client_ip(request))
             session.commit()
@@ -1283,7 +1306,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         label: str = Form(...),
         username: str = Form(...),
         password: str = Form(...),
-        consignataria: str = Form(""),
         csrf: str = Form(...),
         session: Session = Depends(get_db),
     ):
@@ -1299,7 +1321,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 label=label,
                 username=username,
                 password=password,
-                portal_profile=consignataria,
             )
             audit(
                 session,
@@ -1418,7 +1439,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = require_browser_user(request, session)
         if isinstance(user, RedirectResponse):
             return user
-        datasets = list(session.scalars(select(Dataset).order_by(Dataset.created_at.desc())))
+        datasets = list(session.scalars(select(Dataset).order_by(Dataset.municipality_slug, Dataset.dataset_type, Dataset.created_at.desc())))
         municipalities = list(
             session.scalars(
                 select(Municipality)
@@ -1434,6 +1455,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user,
                 datasets=datasets,
                 municipalities=municipalities,
+                municipality_map={item.slug: item for item in municipalities},
+                dataset_types=DATASET_TYPES,
             ),
         )
 
@@ -1441,8 +1464,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def upload_dataset(
         request: Request,
         municipality_slug: str = Form(...),
-        display_name: str = Form(""),
-        duplicate_policy: str = Form("keep_first"),
+        display_name: str = Form(...),
+        dataset_type: str = Form(...),
         csrf: str = Form(...),
         file: UploadFile = File(...),
         session: Session = Depends(get_db),
@@ -1456,6 +1479,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # os heartbeats e as chamadas dos workers.
         payload = file.file.read(settings.max_upload_bytes + 1)
         dataset = None
+        committed = False
         actor_id = user.id
         try:
             dataset = import_dataset(
@@ -1465,8 +1489,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 filename=file.filename or "base.xlsx",
                 payload=payload,
                 uploaded_by_id=user.id,
-                display_name=display_name or None,
-                duplicate_policy=duplicate_policy,
+                display_name=display_name,
+                dataset_type=dataset_type,
             )
             audit(
                 session,
@@ -1478,20 +1502,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details={
                     "rows": dataset.row_count,
                     "municipality": municipality_slug,
+                    "dataset_type": dataset.dataset_type,
+                    "import": import_summary(dataset),
                 },
             )
             session.commit()
+            committed = True
+            summary = import_summary(dataset)
             request.session["flash"] = {
                 "level": "warning" if dataset.error_message else "success",
                 "message": (
-                    f"Base importada com {dataset.row_count} registros. "
-                    f"{dataset.error_message or ''}"
+                    f"Base “{dataset.display_name}”: {summary['added_row_count']} registro(s) adicionado(s), "
+                    f"{summary['existing_row_count']} já existente(s). Total: {dataset.row_count}. "
+                    + (f"Base Geral: {summary['general_added_row_count']} novo(s) registro(s). " if dataset.dataset_type != "geral" else "")
+                    + f"{summary['duplicate_row_count']} repetição(ões) no arquivo ignorada(s). "
+                    + f"{dataset.error_message or ''}"
                 ).strip(),
             }
         except ValueError as exc:
-            storage_path = dataset.storage_path if dataset else None
             session.rollback()
-            delete_dataset_blob(storage_path)
+            if not committed:
+                cleanup_import_blob(dataset)
             audit(
                 session,
                 actor_id=actor_id,
@@ -1504,9 +1535,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session.commit()
             request.session["flash"] = {"level": "error", "message": str(exc)}
         except IntegrityError:
-            storage_path = dataset.storage_path if dataset else None
             session.rollback()
-            delete_dataset_blob(storage_path)
+            if not committed:
+                cleanup_import_blob(dataset)
             audit(
                 session,
                 actor_id=actor_id,
@@ -1519,8 +1550,80 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session.commit()
             request.session["flash"] = {
                 "level": "error",
-                "message": "A base conflita com um registro já existente.",
+                "message": "Outra importação atualizou esta base ao mesmo tempo. Envie novamente para complementar os registros restantes.",
             }
+        except Exception:
+            session.rollback()
+            if not committed:
+                cleanup_import_blob(dataset)
+            raise
+        return RedirectResponse("/admin/datasets", status_code=303)
+
+    @app.get("/admin/datasets/{dataset_id}", response_class=HTMLResponse)
+    def dataset_detail_page(
+        dataset_id: int, request: Request, page: int = Query(1, ge=1),
+        session: Session = Depends(get_db),
+    ):
+        user = require_browser_user(request, session)
+        if isinstance(user, RedirectResponse):
+            return user
+        dataset = session.get(Dataset, dataset_id)
+        if not dataset:
+            raise HTTPException(404, "Base não encontrada.")
+        return TEMPLATES.TemplateResponse(
+            request=request, name="dataset_detail.html",
+            context=page_context(
+                request, user, dataset=dataset, dataset_types=DATASET_TYPES,
+                municipality=session.get(Municipality, dataset.municipality_slug),
+                records=dataset_record_page(session, settings, dataset, page=page),
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/admin/datasets/{dataset_id}/edit")
+    def edit_dataset(
+        dataset_id: int, request: Request, display_name: str = Form(...),
+        dataset_type: str = Form(...), csrf: str = Form(...),
+        session: Session = Depends(get_db),
+    ):
+        user = require_browser_user(request, session, write_access=True)
+        if isinstance(user, RedirectResponse):
+            return user
+        validate_csrf(request, csrf)
+        dataset = session.get(Dataset, dataset_id)
+        if not dataset:
+            raise HTTPException(404, "Base não encontrada.")
+        try:
+            update_dataset(session, dataset=dataset, display_name=display_name, dataset_type=dataset_type)
+            audit(session, actor_id=user.id, action="dataset.updated", target_type="dataset", target_id=str(dataset.id), ip_address=client_ip(request), details={"name": dataset.display_name, "dataset_type": dataset.dataset_type})
+            session.commit()
+            request.session["flash"] = {"level": "success", "message": "Base atualizada. Os registros das consultas anteriores foram preservados."}
+        except (ValueError, IntegrityError) as exc:
+            session.rollback()
+            message = str(exc) if isinstance(exc, ValueError) else "Já existe uma base deste tipo no convênio. Complemente-a pela importação."
+            request.session["flash"] = {"level": "error", "message": message}
+        return RedirectResponse(f"/admin/datasets/{dataset_id}", status_code=303)
+
+    @app.post("/admin/datasets/{dataset_id}/remove")
+    def remove_dataset(
+        dataset_id: int, request: Request, csrf: str = Form(...),
+        session: Session = Depends(get_db),
+    ):
+        user = require_browser_user(request, session, write_access=True)
+        if isinstance(user, RedirectResponse):
+            return user
+        validate_csrf(request, csrf)
+        dataset = session.get(Dataset, dataset_id)
+        if not dataset:
+            raise HTTPException(404, "Base não encontrada.")
+        try:
+            archive_dataset(session, dataset=dataset)
+            audit(session, actor_id=user.id, action="dataset.archived", target_type="dataset", target_id=str(dataset.id), ip_address=client_ip(request))
+            session.commit()
+            request.session["flash"] = {"level": "success", "message": "Base removida das disponíveis e agendamentos desativados. Histórico e registros da Geral preservados."}
+        except ValueError as exc:
+            session.rollback()
+            request.session["flash"] = {"level": "error", "message": str(exc)}
         return RedirectResponse("/admin/datasets", status_code=303)
 
     @app.post("/admin/datasets/{dataset_id}/jobs")
@@ -1976,6 +2079,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "name": getattr(dataset, "display_name", None)
                     or dataset.original_filename,
                     "rows": dataset.row_count,
+                    "dataset_type": dataset.dataset_type,
+                    "type_label": DATASET_TYPES.get(dataset.dataset_type, "Não classificada"),
                     "created_at": dataset.created_at.isoformat(),
                 }
             )

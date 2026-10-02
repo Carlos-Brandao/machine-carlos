@@ -19,6 +19,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -200,6 +201,14 @@ class Dataset(TimestampMixin, Base):
             "duplicate_policy IN ('reject', 'keep_first', 'keep_all')",
             name="ck_datasets_duplicate_policy",
         ),
+        CheckConstraint(
+            "dataset_type IN ('efetivos', 'temporarios', 'comissionados', 'geral')",
+            name="ck_datasets_type",
+        ),
+        Index(
+            "uq_datasets_active_type", "municipality_slug", "dataset_type",
+            unique=True, postgresql_where=text("status <> 'archived'"),
+        ),
         Index(
             "ix_datasets_catalog",
             "municipality_slug",
@@ -217,6 +226,8 @@ class Dataset(TimestampMixin, Base):
     )
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    # Legacy bases are explicitly unclassified until an operator chooses a type.
+    dataset_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -250,6 +261,28 @@ class DatasetRecord(Base):
     registration: Mapped[str | None] = mapped_column(String(120))
     source_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     source_data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class DatasetMembership(Base):
+    """Catalog membership; source records stay immutable for historical jobs."""
+
+    __tablename__ = "dataset_memberships"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "identity_key", name="uq_dataset_memberships_identity"),
+        UniqueConstraint("dataset_id", "dataset_record_id", name="uq_dataset_memberships_record"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dataset_record_id: Mapped[int] = mapped_column(
+        ForeignKey("dataset_records.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    identity_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class Job(TimestampMixin, Base):

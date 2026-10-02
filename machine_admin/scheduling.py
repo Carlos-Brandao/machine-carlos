@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from machine_admin.models import Job, Municipality, Platform, Schedule, ScheduleOccurrence
+from machine_admin.datasets import lock_dataset_catalog
+from machine_admin.models import Dataset, Job, Municipality, Platform, Schedule, ScheduleOccurrence
 from machine_admin.operations import ACTIVE_JOB_STATES, create_execution, validate_execution_selection
 
 
@@ -82,6 +83,10 @@ def next_occurrence(expression: str, timezone: str, after: datetime) -> datetime
 
 
 def create_schedule(session: Session, *, name: str, dataset_id: int, requested_by_id: int | None, cron_expression: str, timezone: str = "America/Fortaleza", selected_credential_ids: list[int] | None = None, max_parallel_accounts: int = 1, enabled: bool = True, misfire_grace_seconds: int = 300) -> Schedule:
+    dataset = session.get(Dataset, dataset_id)
+    if dataset is not None:
+        lock_dataset_catalog(session, dataset.municipality_slug)
+        session.refresh(dataset)
     _, accounts = validate_execution_selection(session, dataset_id=dataset_id, selected_credential_ids=selected_credential_ids, max_parallel_accounts=max_parallel_accounts, require_usable=False)
     name = name.strip()
     if not name or len(name) > 160:
@@ -110,6 +115,10 @@ def update_schedule(session: Session, schedule: Schedule, **changes) -> Schedule
     values = {key: changes.get(key, getattr(schedule, key)) for key in allowed}
     if not values["name"].strip() or len(values["name"]) > 160 or not 60 <= values["misfire_grace_seconds"] <= 3600:
         raise ValueError("Nome ou tolerância de atraso inválidos.")
+    dataset = session.get(Dataset, values["dataset_id"])
+    if dataset is not None:
+        lock_dataset_catalog(session, dataset.municipality_slug)
+        session.refresh(dataset)
     _, accounts = validate_execution_selection(session, dataset_id=values["dataset_id"], selected_credential_ids=values["selected_credential_ids"], max_parallel_accounts=values["max_parallel_accounts"], require_usable=False)
     next_run = next_occurrence(values["cron_expression"], values["timezone"], datetime.now(UTC))
     for key, value in values.items():
@@ -134,7 +143,17 @@ def serialize_schedule(schedule: Schedule) -> dict:
 def process_due_schedules(session: Session, *, now: datetime | None = None, limit: int = 25) -> int:
     now = now or datetime.now(UTC)
     schedules = list(session.scalars(select(Schedule).where(Schedule.enabled.is_(True), Schedule.next_run_at <= now).order_by(Schedule.next_run_at, Schedule.id).limit(limit).with_for_update(skip_locked=True)))
+    processed = 0
     for schedule in schedules:
+        dataset = session.get(Dataset, schedule.dataset_id)
+        # Archiving locks the catalog before disabling schedules. This path
+        # already owns schedule row locks, so never wait on the catalog: retry
+        # next tick without advancing the due time or creating an occurrence.
+        if dataset is not None:
+            if not lock_dataset_catalog(session, dataset.municipality_slug, wait=False):
+                continue
+            session.refresh(dataset)
+        processed += 1
         due = schedule.next_run_at
         # Advancing directly beyond now bounds recovery: no backlog storm after an outage.
         schedule.next_run_at = next_occurrence(schedule.cron_expression, schedule.timezone, now)
@@ -161,7 +180,7 @@ def process_due_schedules(session: Session, *, now: datetime | None = None, limi
             occurrence.status = "blocked"
             occurrence.message = str(exc)
     session.flush()
-    return len(schedules)
+    return processed
 
 
 @dataclass(frozen=True, slots=True)

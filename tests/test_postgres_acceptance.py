@@ -16,7 +16,7 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from machine_admin.models import (Base, ConsultationResult, CredentialLease, Dataset,
+from machine_admin.models import (Base, ConsultationResult, CredentialLease, Dataset, DatasetMembership,
     DatasetRecord, Job, JobEvent, JobItem, Municipality, Platform, PortalCredential)
 from machine_admin.queue import (acquire_credential, claim_job_items, complete_job_item,
     heartbeat_credential, release_credential, requeue_job_item, request_job_drain,
@@ -71,6 +71,7 @@ class PostgresQueueAcceptance(unittest.TestCase):
                 for i in range(count)]
             session.add_all(records)
             session.flush()
+            session.add_all([DatasetMembership(dataset_id=dataset.id, dataset_record_id=record.id, identity_key=f"legacy:{record.id}") for record in records])
             session.add_all([JobItem(job_id=job.id, dataset_record_id=record.id) for record in records])
             return job.id, slug
 

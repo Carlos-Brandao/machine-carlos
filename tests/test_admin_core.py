@@ -18,7 +18,8 @@ from machine_admin.config import Settings
 from machine_admin.datasets import import_dataset
 from machine_admin.datasets import normalise_custom_columns
 from machine_admin.db import get_db
-from machine_admin.models import Base, Dataset, DatasetRecord
+from machine_admin.models import Base, Dataset, DatasetRecord, Municipality
+from tests.dataset_test_support import DatasetImportQueries
 from machine_admin.queue import (
     credential_candidate_statement,
     job_item_claim_statement,
@@ -48,19 +49,27 @@ def settings_for(storage_dir: Path) -> Settings:
     )
 
 
-class FakeImportSession:
+class FakeImportSession(DatasetImportQueries):
     def __init__(self) -> None:
         self.records: list[object] = []
 
+    def get(self, model, key):
+        if model is Municipality and key in {"boa-vista", "itabuna"}:
+            return Municipality(slug=key, name=key, input_schema={"deduplication_key": ["cpf"]})
+        return None
+
     def add(self, value: object) -> None:
-        if isinstance(value, Dataset) and value.id is None:
-            value.id = 1
+        self.assign_record_id(value)
         self.records.append(value)
 
     def add_all(self, values: list[object]) -> None:
-        self.records.extend(values)
+        for value in values:
+            self.add(value)
 
     def flush(self) -> None:
+        return None
+
+    def refresh(self, value) -> None:
         return None
 
 

@@ -5,8 +5,10 @@ from fastapi import Depends, File, Form, Header, HTTPException, Query, UploadFil
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, true
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from machine_admin.datasets import delete_dataset_blob, import_dataset
+from machine_admin.datasets import archive_dataset, cleanup_import_blob, import_dataset, lock_dataset_catalog, update_dataset
+from machine_admin.dataset_views import import_summary, serialize_dataset
 from machine_admin.db import get_db
 from machine_admin.models import AdminUser, ApiToken, Dataset, ExportArtifact, Job, JobEvent, Municipality, NotificationOutbox, Schedule, ScheduleOccurrence, WebhookEndpoint
 from machine_admin.operations import create_execution, result_page, serialize_job
@@ -58,6 +60,12 @@ class EnabledInput(BaseModel):
     enabled: bool
 
 
+class DatasetPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str | None = Field(default=None, min_length=1, max_length=160)
+    dataset_type: Literal["efetivos", "temporarios", "comissionados", "geral"] | None = None
+
+
 def install_product_routes(app, settings, require_scope, control_job):
     def owner_id(session, principal) -> int:
         token = session.get(ApiToken, principal.token_id)
@@ -86,34 +94,86 @@ def install_product_routes(app, settings, require_scope, control_job):
             raise HTTPException(404, "Exportação não encontrada.")
         return artifact
 
+    def require_dataset_destination_access(session, principal, municipality_slug, dataset_type):
+        # Complements also update General, so apply ownership to both targets.
+        lock_dataset_catalog(session, municipality_slug)
+        for target in session.scalars(select(Dataset).where(
+            Dataset.municipality_slug == municipality_slug,
+            Dataset.dataset_type.in_({dataset_type, "geral"}),
+            Dataset.status != "archived",
+        )):
+            owned(session, Dataset, target.id, principal)
+
     @app.post("/api/v1/datasets", status_code=201)
-    def upload_dataset(municipality_slug: str = Form(...), file: UploadFile = File(...), display_name: str | None = Form(None), duplicate_policy: Literal["keep_first", "reject", "keep_all"] = Form("keep_first"), principal=Depends(require_scope("datasets:write")), session: Session = Depends(get_db)):
+    def upload_dataset(municipality_slug: str = Form(...), file: UploadFile = File(...), display_name: str = Form(...), dataset_type: Literal["efetivos", "temporarios", "comissionados", "geral"] = Form(...), principal=Depends(require_scope("datasets:write")), session: Session = Depends(get_db)):
         if not session.get(Municipality, municipality_slug):
             raise HTTPException(404, "Convênio não encontrado.")
+        require_dataset_destination_access(session, principal, municipality_slug, dataset_type)
         payload = file.file.read(settings.max_upload_bytes + 1)
         dataset = None
+        committed = False
         try:
-            dataset = import_dataset(session, settings, municipality_slug=municipality_slug, filename=file.filename or "base.xlsx", payload=payload, uploaded_by_id=owner_id(session, principal), display_name=display_name, duplicate_policy=duplicate_policy)
+            dataset = import_dataset(session, settings, municipality_slug=municipality_slug, filename=file.filename or "base.xlsx", payload=payload, uploaded_by_id=owner_id(session, principal), display_name=display_name, dataset_type=dataset_type)
             session.commit()
-            return {"id": dataset.id, "municipality_slug": dataset.municipality_slug, "name": dataset.display_name, "row_count": dataset.row_count, "status": dataset.status, "warnings": dataset.error_message}
+            committed = True
+            return {**serialize_dataset(dataset), "import": import_summary(dataset)}
         except ValueError as exc:
             session.rollback()
-            if dataset:
-                delete_dataset_blob(dataset.storage_path)
+            if not committed:
+                cleanup_import_blob(dataset)
             raise HTTPException(422, str(exc)) from exc
+        except IntegrityError as exc:
+            session.rollback()
+            if not committed:
+                cleanup_import_blob(dataset)
+            raise HTTPException(409, "Outra importação atualizou esta base. Reenvie para complementar os registros restantes.") from exc
         except Exception:
             session.rollback()
-            if dataset:
-                delete_dataset_blob(dataset.storage_path)
+            if not committed:
+                cleanup_import_blob(dataset)
             raise
 
     @app.get("/api/v1/datasets")
-    def datasets(municipality_slug: str | None = None, after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), principal=Depends(require_scope("datasets:read")), session: Session = Depends(get_db)):
+    def datasets(municipality_slug: str | None = None, dataset_type: Literal["efetivos", "temporarios", "comissionados", "geral"] | None = None, include_archived: bool = False, after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), principal=Depends(require_scope("datasets:read")), session: Session = Depends(get_db)):
         statement = select(Dataset).where(ownership(session, principal, Dataset.uploaded_by_id), Dataset.id > after_id).order_by(Dataset.id).limit(limit + 1)
         if municipality_slug:
             statement = statement.where(Dataset.municipality_slug == municipality_slug)
+        if dataset_type:
+            statement = statement.where(Dataset.dataset_type == dataset_type)
+        if not include_archived:
+            statement = statement.where(Dataset.status != "archived")
         rows = list(session.scalars(statement))
-        return {"items": [{"id": r.id, "name": r.display_name, "municipality_slug": r.municipality_slug, "row_count": r.row_count, "status": r.status, "warnings": r.error_message} for r in rows[:limit]], "next_cursor": rows[limit - 1].id if len(rows) > limit else None}
+        return {"items": [serialize_dataset(row) for row in rows[:limit]], "next_cursor": rows[limit - 1].id if len(rows) > limit else None}
+
+    @app.get("/api/v1/datasets/{dataset_id}")
+    def dataset_detail(dataset_id: int, principal=Depends(require_scope("datasets:read")), session: Session = Depends(get_db)):
+        return serialize_dataset(owned(session, Dataset, dataset_id, principal))
+
+    @app.patch("/api/v1/datasets/{dataset_id}")
+    def dataset_update(dataset_id: int, body: DatasetPatch, principal=Depends(require_scope("datasets:write")), session: Session = Depends(get_db)):
+        dataset = owned(session, Dataset, dataset_id, principal)
+        require_dataset_destination_access(session, principal, dataset.municipality_slug, body.dataset_type or dataset.dataset_type)
+        try:
+            update_dataset(session, dataset=dataset, display_name=body.display_name if body.display_name is not None else (dataset.display_name or dataset.original_filename), dataset_type=body.dataset_type)
+            session.commit()
+            return serialize_dataset(dataset)
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(422, str(exc)) from exc
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(409, "Já existe uma base deste tipo no convênio.") from exc
+
+    @app.delete("/api/v1/datasets/{dataset_id}")
+    def dataset_remove(dataset_id: int, principal=Depends(require_scope("datasets:write")), session: Session = Depends(get_db)):
+        dataset = owned(session, Dataset, dataset_id, principal)
+        try:
+            archive_dataset(session, dataset=dataset)
+            session.commit()
+            return {**serialize_dataset(dataset), "message": "Base removida das disponíveis. Histórico preservado e agendamentos desativados."}
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(409, str(exc)) from exc
 
     @app.post("/api/v1/jobs", status_code=201)
     def create_job(body: Selection, idempotency_key: str | None = Header(None, alias="Idempotency-Key", max_length=160), principal=Depends(require_scope("jobs:write")), session: Session = Depends(get_db)):

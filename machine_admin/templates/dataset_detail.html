@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "_ui.html" import status_badge %}
+{% block title %}{{ dataset.display_name or dataset.original_filename }} · Bases{% endblock %}
+{% block content %}
+<div class="page-title"><div><p class="eyebrow">Base #{{ dataset.id }}</p><h1>{{ dataset.display_name or dataset.original_filename }}</h1><p class="lead">{{ municipality.name if municipality else dataset.municipality_slug }} · {{ dataset_types.get(dataset.dataset_type, 'Não classificada') }} · {{ dataset.row_count }} registros</p></div><a class="button ghost" href="/admin/datasets">Voltar às bases</a></div>
+{% if dataset.status == 'ready' and user.role in ['admin', 'operator'] %}
+<section class="card"><div class="section-title"><h2>Editar base</h2>{{ status_badge(dataset.status) }}</div>
+  <form method="post" action="/admin/datasets/{{ dataset.id }}/edit" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>Nome da base<input name="display_name" value="{{ dataset.display_name or dataset.original_filename }}" maxlength="160" required></label>
+    <label>Convênio<input value="{{ municipality.name if municipality else dataset.municipality_slug }}" readonly><span class="field-help">Para outro convênio, importe o arquivo em uma nova base.</span></label>
+    <label>Tipo<select name="dataset_type" required>{% if not dataset.dataset_type %}<option value="" selected>Selecione para classificar</option>{% endif %}{% for value, label in dataset_types.items() %}<option value="{{ value }}" {{ 'selected' if value == dataset.dataset_type else '' }}>{{ label }}</option>{% endfor %}</select><span class="field-help">Se já existir uma base do tipo escolhido, complemente-a pela importação.</span></label>
+    <button type="submit">Salvar alterações</button>
+  </form>
+  <p class="muted">A mudança de tipo atualiza a organização da base e a união na Geral. Os cadastros já incorporados à Geral e as consultas anteriores são preservados.</p>
+  <div class="job-actions"><a class="button secondary" href="/admin/datasets#importar">Complementar com arquivo</a><a class="button" href="/admin/consultations/new?dataset_id={{ dataset.id }}">Iniciar consulta</a><form method="post" action="/admin/datasets/{{ dataset.id }}/remove" data-confirm="Remover esta base das disponíveis e desativar seus agendamentos? O histórico de consultas e os registros já incorporados à Geral serão preservados."><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="danger-outline">Remover base</button></form></div>
+</section>
+{% elif dataset.status == 'archived' %}<div class="notice"><strong>Base removida</strong><span>Disponível para conferir o histórico. Novas consultas e agendamentos não usam esta base.</span></div>{% endif %}
+<section class="card"><div class="section-title"><div><h2>Registros da base</h2><p class="muted">Página {{ records.page }} · {{ records.total }} registros no total</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>CPF</th><th>Matrícula</th><th>Dados importados</th></tr></thead><tbody>{% for record in records['items'] %}<tr><td>{{ record.cpf }}</td><td>{{ record.registration or '—' }}</td><td><details class="row-details"><summary>Ver campos</summary><dl>{% for key, value in record.source.items() %}<dt>{{ key }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}</dl></details></td></tr>{% else %}<tr><td colspan="3">Nenhum registro nesta página.</td></tr>{% endfor %}</tbody></table></div>
+  <nav class="job-actions" aria-label="Páginas dos registros">{% if records.page > 1 %}<a class="button secondary" href="/admin/datasets/{{ dataset.id }}?page={{ records.page - 1 }}">Anterior</a>{% endif %}{% if records.has_next %}<a class="button secondary" href="/admin/datasets/{{ dataset.id }}?page={{ records.page + 1 }}">Próxima</a>{% endif %}</nav>
+</section>
+{% endblock %}

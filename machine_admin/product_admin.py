@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from machine_admin.db import get_db
+from machine_admin.datasets import DATASET_TYPES
 from machine_admin.models import CredentialLease, Dataset, ExportArtifact, Job, JobEvent, JobItem, Municipality, PortalCredential
 
 
@@ -28,7 +29,7 @@ def install_product_admin(app, settings, require_browser_user, page_context, val
         datasets = list(session.scalars(select(Dataset).where(Dataset.status == "ready").order_by(Dataset.created_at.desc())))
         credentials = list(session.scalars(select(PortalCredential).order_by(PortalCredential.municipality_slug, PortalCredential.label)))
         municipalities = {item.slug: item for item in session.scalars(select(Municipality))}
-        return {"datasets": datasets, "credentials": credentials, "municipality_map": municipalities}
+        return {"datasets": datasets, "credentials": credentials, "municipality_map": municipalities, "dataset_types": DATASET_TYPES}
 
     def get_job(session, job_id, *, lock=False):
         query = select(Job).where(Job.id == job_id)

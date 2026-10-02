@@ -93,10 +93,18 @@ convênio não pode rodar.
 - segunda coluna MATRICULA quando presente;
 - matrícula pode ser obrigatória conforme o convênio;
 - CPF passa por validação dos dígitos verificadores;
-- duplicatas podem manter a primeira, manter todas ou rejeitar a base;
+- registros repetidos são ignorados pela chave do convênio (CPF ou CPF + matrícula);
 - colunas adicionais são preservadas no registro de origem.
 
-Cada base fica vinculada a um convênio e pode ser reutilizada em vários jobs.
+O upload solicita nome, convênio e tipo (Efetivos, Temporários, Comissionados ou
+Geral). Cada convênio tem uma base ativa por tipo. Novos uploads para o mesmo
+par acrescentam apenas registros ausentes, preservando nome e ID. Bases
+específicas complementam a Geral, que também pode receber uploads diretos.
+
+Em **Bases**, é possível consultar registros, editar nome/tipo e remover uma
+base do catálogo. A remoção desativa suas agendas e preserva consultas anteriores;
+registros de bases específicas permanecem na Geral. Cada novo job recebe uma
+lista fixa dos registros existentes no momento da criação.
 
 ## Concorrência e recuperação
 
@@ -134,12 +142,19 @@ Rotas principais (todas exigem Bearer com o respectivo escopo):
 | Operação | Rota | Escopo |
 |---|---|---|
 | Importar base | POST /api/v1/datasets (multipart) | datasets:write |
+| Listar/detalhar bases | GET /api/v1/datasets e /{id} | datasets:read |
+| Editar nome/tipo | PATCH /api/v1/datasets/{id} | datasets:write |
+| Remover do catálogo | DELETE /api/v1/datasets/{id} | datasets:write |
 | Criar consulta | POST /api/v1/jobs | jobs:write |
 | Acompanhar | GET /api/v1/jobs/{id} | jobs:read |
 | Resultados | GET /api/v1/jobs/{id}/results?after_id=0&limit=100 | results:read |
 | Preparar arquivo | POST /api/v1/jobs/{id}/exports | exports:write |
 | Estado/arquivo | GET /api/v1/exports/{id} e /download | exports:read |
 | Agendar | POST /api/v1/schedules | schedules:write |
+
+Importação exige os campos multipart `display_name`, `municipality_slug`,
+`dataset_type` (`efetivos`, `temporarios`, `comissionados` ou `geral`) e `file`.
+O retorno informa o ID da base criada ou complementada e a quantidade adicionada.
 
 Exemplo de criação: `{"dataset_id": 6, "selected_credential_ids": [2, 8],
 "max_parallel_accounts": 2}`, com header `Idempotency-Key: minha-solicitacao-unica`.
