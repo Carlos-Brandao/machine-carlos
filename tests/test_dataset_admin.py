@@ -133,6 +133,10 @@ class DatasetAdminTests(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
         self.assertIn('name="dataset_type" required', response.text)
         self.assertNotIn('name="duplicate_policy"', response.text)
+        self.assertNotIn('/admin/consultations/new?dataset_id=', response.text)
+        self.assertIn('href="/admin/datasets/2">Ver / editar</a>', response.text)
+        self.assertIn('action="/admin/datasets/2/remove"', response.text)
+        self.assertIn('>Remover</button>', response.text)
         self.dataset.dataset_type = None
         response = self.client.get("/admin/datasets")
         self.assertEqual(200, response.status_code)
@@ -144,6 +148,7 @@ class DatasetAdminTests(unittest.TestCase):
         self.assertIn("Não classificada", response.text)
         self.assertIn("Selecione para classificar", response.text)
         self.assertIn("?page=1", response.text)
+        self.assertIn('href="/admin/consultations/new?dataset_id=2">Iniciar consulta</a>', response.text)
         self.assertEqual("no-store", response.headers["cache-control"])
         self.assertEqual(2, loader.call_args.kwargs["page"])
 
